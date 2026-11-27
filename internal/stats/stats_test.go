@@ -38,16 +38,29 @@ func TestOpenAndLiveHistory(t *testing.T) {
 		t.Fatalf("expected 36 live points, got down=%d up=%d", len(down), len(up))
 	}
 	for i := range down {
-		if down[i] <= 0 || up[i] <= 0 {
-			t.Fatalf("expected non-zero default wave at index %d, got down=%v up=%v", i, down[i], up[i])
+		if down[i] != 0 || up[i] != 0 {
+			t.Fatalf("expected zeroed initial live history at index %d, got down=%v up=%v", i, down[i], up[i])
 		}
 	}
 
 	base := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+	if err := st.RecordTick(base, "org-work", "node-us", 1024*1024, 512*1024); err != nil {
+		t.Fatalf("initial RecordTick failed: %v", err)
+	}
+	down, up = st.LiveHistory()
+	for i := 0; i < 35; i++ {
+		if down[i] != 0 || up[i] != 0 {
+			t.Fatalf("expected earlier points to stay zero after single tick at index %d, got down=%v up=%v", i, down[i], up[i])
+		}
+	}
+	if down[35] != 1.0 || up[35] != 0.5 {
+		t.Fatalf("expected latest single tick (1.0, 0.5), got (%v, %v)", down[35], up[35])
+	}
+
 	for i := 0; i < 40; i++ {
 		downBytes := int64((i + 1) * 1024 * 1024 / 2) // 0.5 MB increments
 		upBytes := int64(256 * 1024)                  // 0.25 MB -> rounded 0.3
-		if err := st.RecordTick(base.Add(time.Duration(i)*time.Second), "org-work", "node-us", downBytes, upBytes); err != nil {
+		if err := st.RecordTick(base.Add(time.Duration(i+1)*time.Second), "org-work", "node-us", downBytes, upBytes); err != nil {
 			t.Fatalf("RecordTick %d failed: %v", i, err)
 		}
 	}

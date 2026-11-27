@@ -25,6 +25,9 @@ func TestListRunningApps(t *testing.T) {
 		if strings.TrimSpace(app.Path) == "" {
 			t.Fatalf("app %q has empty Path", app.Process)
 		}
+		if runtime.GOOS != "windows" && strings.Contains(app.Path, `C:\`) {
+			t.Fatalf("non-Windows host must not return fake Windows path: %+v", app)
+		}
 		key := strings.ToLower(app.Process)
 		if _, dup := seen[key]; dup {
 			t.Fatalf("duplicate process entry %q", app.Process)
@@ -41,14 +44,16 @@ func TestServiceStubAndConstants(t *testing.T) {
 		t.Fatalf("unexpected ServiceName = %q", ServiceName)
 	}
 
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
 		if err := InstallService("/tmp/singtail-service"); err != nil {
 			t.Fatalf("InstallService stub error = %v", err)
 		}
 		if err := UninstallService(); err != nil {
 			t.Fatalf("UninstallService stub error = %v", err)
 		}
+	}
 
+	if runtime.GOOS != "windows" {
 		called := false
 		wantErr := errors.New("boom")
 		err := RunService(func(stopCh <-chan struct{}) error {

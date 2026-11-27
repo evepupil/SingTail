@@ -14,6 +14,7 @@ type Controller struct {
 
 	mu           sync.RWMutex
 	prober       IPProber
+	demoMode     bool
 	tunEnabled   bool
 	mode         contract.RoutingMode
 	activeExitID string
@@ -22,8 +23,15 @@ type Controller struct {
 	connections  []contract.LiveConnection
 }
 
-// NewController creates a Controller initialized with runtime flags and demo connections.
-func NewController(prober IPProber, tunEnabled bool, mode contract.RoutingMode, activeExitID string) *Controller {
+// NewController creates a Controller initialized with runtime flags.
+// Live connections start empty in production mode and use sample entries only when demoMode is true.
+func NewController(
+	prober IPProber,
+	tunEnabled bool,
+	mode contract.RoutingMode,
+	activeExitID string,
+	demoMode bool,
+) *Controller {
 	if prober == nil {
 		prober = NewDefaultProber(false)
 	}
@@ -31,12 +39,18 @@ func NewController(prober IPProber, tunEnabled bool, mode contract.RoutingMode, 
 		mode = contract.ModeRule
 	}
 
+	conns := []contract.LiveConnection{}
+	if demoMode {
+		conns = defaultLiveConnections()
+	}
+
 	return &Controller{
 		prober:       prober,
+		demoMode:     demoMode,
 		tunEnabled:   tunEnabled,
 		mode:         mode,
 		activeExitID: activeExitID,
-		connections:  defaultLiveConnections(),
+		connections:  conns,
 	}
 }
 
@@ -56,11 +70,43 @@ func (ctrl *Controller) SetMode(mode contract.RoutingMode) {
 	}
 }
 
+// SetActiveExitID directly updates the active exit node ID without running a probe.
+func (ctrl *Controller) SetActiveExitID(exitID string) {
+	ctrl.mu.Lock()
+	defer ctrl.mu.Unlock()
+	ctrl.activeExitID = exitID
+}
+
+// SetBanner records a banner notice for the UI.
+func (ctrl *Controller) SetBanner(notice *contract.BannerNotice) {
+	ctrl.mu.Lock()
+	defer ctrl.mu.Unlock()
+	if notice == nil {
+		ctrl.notice = nil
+		return
+	}
+	cp := *notice
+	ctrl.notice = &cp
+}
+
 // ClearBanner dismisses the active verification or rollback banner notice.
 func (ctrl *Controller) ClearBanner() {
 	ctrl.mu.Lock()
 	defer ctrl.mu.Unlock()
 	ctrl.notice = nil
+}
+
+// SetConnections replaces the observed live connections list with a copy of conns.
+func (ctrl *Controller) SetConnections(conns []contract.LiveConnection) {
+	ctrl.mu.Lock()
+	defer ctrl.mu.Unlock()
+	if len(conns) == 0 {
+		ctrl.connections = []contract.LiveConnection{}
+		return
+	}
+	cp := make([]contract.LiveConnection, len(conns))
+	copy(cp, conns)
+	ctrl.connections = cp
 }
 
 // State returns a thread-safe snapshot of the controller state.
@@ -86,6 +132,19 @@ func (ctrl *Controller) SwitchExit(
 	verifyIP bool,
 	proxyAddr string,
 ) (activeID string, notice *contract.BannerNotice, err error) {
+	activeID, _, notice, err = ctrl.SwitchExitAndProbe(ctx, target, allNodes, verifyIP, proxyAddr)
+	return activeID, notice, err
+}
+
+// SwitchExitAndProbe switches the active exit node, optionally verifies public IP egress,
+// and returns the effective exit ID along with the probed public IP on success.
+func (ctrl *Controller) SwitchExitAndProbe(
+	ctx context.Context,
+	target contract.ExitNode,
+	allNodes []contract.ExitNode,
+	verifyIP bool,
+	proxyAddr string,
+) (activeID string, probedIP string, notice *contract.BannerNotice, err error) {
 	ctrl.switchMu.Lock()
 	defer ctrl.switchMu.Unlock()
 
@@ -101,7 +160,7 @@ func (ctrl *Controller) SwitchExit(
 		ctrl.verifyingID = ""
 		ctrl.notice = nil
 		ctrl.mu.Unlock()
-		return target.ID, nil, nil
+		return target.ID, "", nil, nil
 	}
 	ctrl.verifyingID = target.ID
 	ctrl.notice = &contract.BannerNotice{
@@ -111,14 +170,14 @@ func (ctrl *Controller) SwitchExit(
 	prober := ctrl.prober
 	ctrl.mu.Unlock()
 
-	_, probeErr := prober.ProbePublicIP(ctx, proxyAddr, target)
+	ip, probeErr := prober.ProbePublicIP(ctx, proxyAddr, target)
 	if probeErr == nil {
 		ctrl.mu.Lock()
 		ctrl.activeExitID = target.ID
 		ctrl.verifyingID = ""
 		ctrl.notice = nil
 		ctrl.mu.Unlock()
-		return target.ID, nil, nil
+		return target.ID, ip, nil, nil
 	}
 
 	prevNode := resolvePrevNode(allNodes, prevID)
@@ -134,7 +193,7 @@ func (ctrl *Controller) SwitchExit(
 	ctrl.mu.Unlock()
 
 	noticeCopy := rollbackNotice
-	return prevID, &noticeCopy, probeErr
+	return prevID, "", &noticeCopy, probeErr
 }
 
 // ListConnections returns a snapshot of observed active connections, updating

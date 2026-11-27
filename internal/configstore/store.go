@@ -21,6 +21,7 @@ type PersistedState struct {
 	RoutingMode  contract.RoutingMode    `json:"routingMode"`
 	ActiveExitID string                  `json:"activeExitId"`
 	Orgs         []contract.Organization `json:"orgs"`
+	ExitNodes    []contract.ExitNode     `json:"exitNodes"`
 	CustomRules  []contract.Rule         `json:"customRules"`
 	Providers    []contract.RuleProvider `json:"providers"`
 	Settings     contract.SystemSettings `json:"settings"`
@@ -39,9 +40,10 @@ func New(filePath string) *Store {
 
 func defaultState() PersistedState {
 	return PersistedState{
-		TunEnabled:  true,
+		TunEnabled:  false,
 		RoutingMode: contract.ModeRule,
 		Orgs:        make([]contract.Organization, 0),
+		ExitNodes:   make([]contract.ExitNode, 0),
 		CustomRules: make([]contract.Rule, 0),
 		Providers:   make([]contract.RuleProvider, 0),
 		Settings: contract.SystemSettings{
@@ -57,6 +59,9 @@ func defaultState() PersistedState {
 func normalizeSlices(st *PersistedState) {
 	if st.Orgs == nil {
 		st.Orgs = make([]contract.Organization, 0)
+	}
+	if st.ExitNodes == nil {
+		st.ExitNodes = make([]contract.ExitNode, 0)
 	}
 	if st.CustomRules == nil {
 		st.CustomRules = make([]contract.Rule, 0)

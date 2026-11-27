@@ -6,51 +6,60 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/singtail/singtail/internal/contract"
 )
+
+const pingDialTimeout = 1500 * time.Millisecond
 
 // Coordinator manages authenticated Tailscale organizations and their discovered exit nodes.
 type Coordinator struct {
 	mu        sync.RWMutex
 	stateRoot string
+	demoMode  bool
 	orgs      []contract.Organization
 	nodes     []contract.ExitNode
+	sessions  map[string]contract.OrgLoginSession
 	seq       int
 }
 
 // NewCoordinator constructs a Coordinator with per-organization state directories.
-// When initialOrgs is empty, it loads the built-in two demo organizations and five exit nodes.
-func NewCoordinator(stateRoot string, initialOrgs []contract.Organization) *Coordinator {
+// In production mode (demoMode == false), empty initialOrgs yields empty slices.
+// Demo organizations and nodes are loaded only when demoMode == true and initialOrgs is empty.
+func NewCoordinator(stateRoot string, initialOrgs []contract.Organization, initialNodes []contract.ExitNode, demoMode bool) *Coordinator {
 	c := &Coordinator{
 		stateRoot: stateRoot,
+		demoMode:  demoMode,
+		orgs:      make([]contract.Organization, 0),
+		nodes:     make([]contract.ExitNode, 0),
+		sessions:  make(map[string]contract.OrgLoginSession),
 	}
 
 	if len(initialOrgs) == 0 {
-		c.orgs = defaultDemoOrgs(stateRoot)
-		c.nodes = defaultDemoNodes()
+		if demoMode {
+			c.orgs = defaultDemoOrgs(stateRoot)
+			c.nodes = defaultDemoNodes()
+		}
 		return c
 	}
 
 	c.orgs = make([]contract.Organization, len(initialOrgs))
-	orgIDs := make(map[string]struct{}, len(initialOrgs))
 	for i, org := range initialOrgs {
 		if org.StateDir == "" && org.ID != "" {
 			org.StateDir = orgStateDir(stateRoot, org.ID)
 		}
 		c.orgs[i] = org
-		if org.ID != "" {
-			orgIDs[org.ID] = struct{}{}
-		}
 	}
 
-	for _, node := range defaultDemoNodes() {
-		if _, ok := orgIDs[node.OrgID]; ok {
-			c.nodes = append(c.nodes, node)
-		}
+	if len(initialNodes) > 0 {
+		c.nodes = make([]contract.ExitNode, len(initialNodes))
+		copy(c.nodes, initialNodes)
 	}
 
 	return c
@@ -176,6 +185,66 @@ func (c *Coordinator) ListExitNodes() []contract.ExitNode {
 	return out
 }
 
+// RemoveOrg deletes the organization and its exit nodes, and removes its ts-state directory when present.
+func (c *Coordinator) RemoveOrg(orgID string) error {
+	target := strings.TrimSpace(orgID)
+	if target == "" {
+		return errors.New("组织 ID 不能为空")
+	}
+
+	c.mu.Lock()
+	orgIdx := -1
+	var stateDir string
+	for i := range c.orgs {
+		if c.orgs[i].ID == target {
+			orgIdx = i
+			stateDir = c.orgs[i].StateDir
+			break
+		}
+	}
+	if orgIdx < 0 {
+		c.mu.Unlock()
+		return fmt.Errorf("未找到组织: %s", target)
+	}
+
+	c.orgs = append(c.orgs[:orgIdx], c.orgs[orgIdx+1:]...)
+
+	filtered := make([]contract.ExitNode, 0, len(c.nodes))
+	for _, n := range c.nodes {
+		if n.OrgID != target {
+			filtered = append(filtered, n)
+		}
+	}
+	c.nodes = filtered
+	if stateDir == "" && c.stateRoot != "" {
+		stateDir = filepath.Join(c.stateRoot, "ts-state-"+target)
+	}
+	c.mu.Unlock()
+
+	if stateDir != "" {
+		_ = os.RemoveAll(filepath.FromSlash(stateDir))
+	}
+	return nil
+}
+
+// UpdateNodePublicIP updates the verified public IP address for a discovered exit node.
+func (c *Coordinator) UpdateNodePublicIP(nodeID, publicIP string) {
+	target := strings.TrimSpace(nodeID)
+	if target == "" {
+		return
+	}
+	ip := strings.TrimSpace(publicIP)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.nodes {
+		if c.nodes[i].ID == target {
+			c.nodes[i].PublicIP = ip
+			return
+		}
+	}
+}
+
 // AddOrg registers a new Tailscale organization with an isolated state directory
 // and prepends its primary exit node to the exit node list.
 func (c *Coordinator) AddOrg(req contract.AddOrgRequest) (contract.Organization, contract.ExitNode, error) {
@@ -282,16 +351,78 @@ func (c *Coordinator) SyncOrg(orgID string) error {
 }
 
 // PingNodes refreshes latency metrics for all nodes.
-// Healthy online nodes fluctuate slightly while staying >= 18ms, and unhealthy nodes stay at 299ms.
+// In demoMode, it simulates latency fluctuation. In production mode, it measures real TCP dial
+// duration against each online node's TailscaleIP:80 and preserves existing values when unreachable.
 func (c *Coordinator) PingNodes(ctx context.Context) []contract.ExitNode {
+	if ctx != nil && ctx.Err() != nil {
+		return c.ListExitNodes()
+	}
+
+	if c.demoMode {
+		return c.pingDemoNodes()
+	}
+
+	c.mu.RLock()
+	snapshot := make([]contract.ExitNode, len(c.nodes))
+	copy(snapshot, c.nodes)
+	c.mu.RUnlock()
+
+	if len(snapshot) == 0 {
+		return []contract.ExitNode{}
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	measured := make(map[string]int, len(snapshot))
+	var measureMu sync.Mutex
+	var wg sync.WaitGroup
+	dialer := net.Dialer{Timeout: pingDialTimeout}
+
+	for _, node := range snapshot {
+		if !node.Online || strings.TrimSpace(node.TailscaleIP) == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(n contract.ExitNode) {
+			defer wg.Done()
+			probeCtx, cancel := context.WithTimeout(ctx, pingDialTimeout)
+			defer cancel()
+
+			start := time.Now()
+			conn, err := dialer.DialContext(probeCtx, "tcp", net.JoinHostPort(strings.TrimSpace(n.TailscaleIP), "80"))
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+			ms := int(time.Since(start).Milliseconds())
+			if ms < 1 {
+				ms = 1
+			}
+			measureMu.Lock()
+			measured[n.ID] = ms
+			measureMu.Unlock()
+		}(node)
+	}
+	wg.Wait()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	if ctx != nil && ctx.Err() != nil {
-		out := make([]contract.ExitNode, len(c.nodes))
-		copy(out, c.nodes)
-		return out
+	for i := range c.nodes {
+		if ms, ok := measured[c.nodes[i].ID]; ok {
+			c.nodes[i].LatencyMs = ms
+		}
 	}
+
+	out := make([]contract.ExitNode, len(c.nodes))
+	copy(out, c.nodes)
+	return out
+}
+
+func (c *Coordinator) pingDemoNodes() []contract.ExitNode {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	for i := range c.nodes {
 		if !c.nodes[i].Healthy || !c.nodes[i].Online {

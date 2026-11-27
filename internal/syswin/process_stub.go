@@ -1,43 +1,49 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package syswin
 
-import "github.com/singtail/singtail/internal/contract"
+import (
+	"fmt"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
 
-var defaultStubApps = []contract.RunningApp{
-	{
-		Process: "chrome.exe",
-		Path:    `C:\Program Files\Google\Chrome\Application\chrome.exe`,
-	},
-	{
-		Process: "Code.exe",
-		Path:    `C:\Users\admin\AppData\Local\Programs\Microsoft VS Code\Code.exe`,
-	},
-	{
-		Process: "Cursor.exe",
-		Path:    `C:\Users\admin\AppData\Local\Programs\cursor\Cursor.exe`,
-	},
-	{
-		Process: "steam.exe",
-		Path:    `C:\Program Files (x86)\Steam\steam.exe`,
-	},
-	{
-		Process: "Telegram.exe",
-		Path:    `C:\Users\admin\AppData\Roaming\Telegram Desktop\Telegram.exe`,
-	},
-	{
-		Process: "WeChat.exe",
-		Path:    `C:\Program Files\Tencent\WeChat\WeChat.exe`,
-	},
-	{
-		Process: "YuanShen.exe",
-		Path:    `D:\Games\Genshin Impact\Genshin Impact Game\YuanShen.exe`,
-	},
-}
+	"github.com/singtail/singtail/internal/contract"
+)
 
-// ListRunningApps returns a deterministic desktop process snapshot on non-Windows platforms for UI preview and tests.
+// ListRunningApps enumerates active OS processes via ps on Unix hosts.
 func ListRunningApps() ([]contract.RunningApp, error) {
-	out := make([]contract.RunningApp, len(defaultStubApps))
-	copy(out, defaultStubApps)
-	return out, nil
+	out, err := exec.Command("ps", "-eo", "comm=").Output()
+	if err != nil {
+		return nil, fmt.Errorf("list processes via ps: %w", err)
+	}
+
+	seen := make(map[string]contract.RunningApp)
+	for _, line := range strings.Split(string(out), "\n") {
+		rawPath := strings.TrimSpace(line)
+		if rawPath == "" {
+			continue
+		}
+		proc := filepath.Base(rawPath)
+		if proc == "" || proc == "." || proc == "/" {
+			continue
+		}
+		key := strings.ToLower(proc)
+		if _, exists := seen[key]; !exists {
+			seen[key] = contract.RunningApp{
+				Process: proc,
+				Path:    rawPath,
+			}
+		}
+	}
+
+	apps := make([]contract.RunningApp, 0, len(seen))
+	for _, app := range seen {
+		apps = append(apps, app)
+	}
+	sort.Slice(apps, func(i, j int) bool {
+		return strings.ToLower(apps[i].Process) < strings.ToLower(apps[j].Process)
+	})
+	return apps, nil
 }

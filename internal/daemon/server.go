@@ -35,27 +35,46 @@ const (
 	maxJSONBodyBytes   = 2 << 20
 	sampleInterval     = 2 * time.Second
 	bytesPerMB         = 1024 * 1024
-	exitSwitchTimeout  = 5 * time.Second
+	exitSwitchTimeout  = 8 * time.Second
 	providerFetchLimit = 16 << 20
 )
+
+// Options configures how a daemon Server initializes storage, tailnet discovery, and sing-box runtime.
+type Options struct {
+	DataDir          string
+	StaticFS         fs.FS
+	RealNetworkProbe bool
+	DemoMode         bool
+	ClashAPIAddr     string
+}
 
 // Server exposes the SingTail REST control API and optional embedded frontend assets.
 type Server struct {
 	dataDir          string
 	staticFS         fs.FS
 	realNetworkProbe bool
+	demoMode         bool
 
-	cfgStore *configstore.Store
-	stats    *stats.Store
-	tailnet  *tailnet.Coordinator
-	rules    *rules.Manager
-	ctrl     *engine.Controller
+	coreAvailable bool
+	coreVersion   string
+
+	cfgStore     *configstore.Store
+	stats        *stats.Store
+	tailnet      *tailnet.Coordinator
+	rules        *rules.Manager
+	ctrl         *engine.Controller
+	rt           *engine.Runtime
+	clashSampler *engine.ClashSampler
 
 	mux        *http.ServeMux
 	httpClient *http.Client
 
 	mu       sync.RWMutex
 	settings contract.SystemSettings
+
+	clashTotalsMu     sync.Mutex
+	lastDownloadTotal int64
+	lastUploadTotal   int64
 
 	saveMu sync.Mutex
 
@@ -65,13 +84,26 @@ type Server struct {
 	closeOnce  sync.Once
 }
 
-// NewServer initializes persistent storage, domain managers, demo traffic seeding,
-// background telemetry sampling, and HTTP routes.
+// NewServer initializes the daemon in production zero-mock mode using default options.
 func NewServer(dataDir string, staticFS fs.FS, realNetworkProbe bool) (*Server, error) {
-	if strings.TrimSpace(dataDir) == "" {
+	return NewServerWithOptions(Options{
+		DataDir:          dataDir,
+		StaticFS:         staticFS,
+		RealNetworkProbe: realNetworkProbe,
+		DemoMode:         false,
+	})
+}
+
+// NewServerWithOptions initializes persistent storage, domain managers, optional demo seeding,
+// sing-box runtime supervision, background telemetry sampling, and HTTP routes.
+func NewServerWithOptions(opts Options) (*Server, error) {
+	dataDir := strings.TrimSpace(opts.DataDir)
+	if dataDir == "" {
 		dataDir = defaultDataDir
 	}
 	dataDir = filepath.Clean(dataDir)
+
+	_ = engine.SeedBundledRules(dataDir)
 
 	statePath := filepath.Join(dataDir, "state.json")
 	_, statErr := os.Stat(statePath)
@@ -88,7 +120,7 @@ func NewServer(dataDir string, staticFS fs.FS, realNetworkProbe bool) (*Server, 
 		return nil, fmt.Errorf("daemon: open traffic stats: %w", err)
 	}
 
-	coord := tailnet.NewCoordinator(dataDir, persisted.Orgs)
+	coord := tailnet.NewCoordinator(dataDir, persisted.Orgs, persisted.ExitNodes, opts.DemoMode)
 	orgs := coord.ListOrgs()
 	nodes := coord.ListExitNodes()
 
@@ -100,26 +132,46 @@ func NewServer(dataDir string, staticFS fs.FS, realNetworkProbe bool) (*Server, 
 	}
 
 	activeExitID := resolveInitialExitID(persisted.ActiveExitID, nodes)
-	prober := engine.NewDefaultProber(realNetworkProbe)
-	ctrl := engine.NewController(prober, persisted.TunEnabled, persisted.RoutingMode, activeExitID)
+	prober := engine.NewDefaultProber(opts.RealNetworkProbe)
+	ctrl := engine.NewController(prober, persisted.TunEnabled, persisted.RoutingMode, activeExitID, opts.DemoMode)
 
-	if err := statsStore.SeedDemoIfEmpty(time.Now(), orgs, nodes); err != nil {
-		_ = statsStore.Close()
-		return nil, fmt.Errorf("daemon: seed demo stats: %w", err)
+	if opts.DemoMode {
+		if err := statsStore.SeedDemoIfEmpty(time.Now(), orgs, nodes); err != nil {
+			_ = statsStore.Close()
+			return nil, fmt.Errorf("daemon: seed demo stats: %w", err)
+		}
 	}
+
+	coreAvailable, coreVersion, _ := engine.CoreStatus()
+	rt := engine.NewRuntime(opts.ClashAPIAddr)
 
 	s := &Server{
 		dataDir:          dataDir,
-		staticFS:         staticFS,
-		realNetworkProbe: realNetworkProbe,
+		staticFS:         opts.StaticFS,
+		realNetworkProbe: opts.RealNetworkProbe,
+		demoMode:         opts.DemoMode,
+		coreAvailable:    coreAvailable,
+		coreVersion:      coreVersion,
 		cfgStore:         cfgStore,
 		stats:            statsStore,
 		tailnet:          coord,
 		rules:            rulesMgr,
 		ctrl:             ctrl,
+		rt:               rt,
+		clashSampler:     engine.NewClashSampler(),
 		settings:         persisted.Settings,
 		httpClient:       &http.Client{Timeout: 10 * time.Second},
 		stopCh:           make(chan struct{}),
+	}
+
+	if s.shouldManageSingBox() && persisted.TunEnabled && hasAnyOnlineNode(orgs, nodes) {
+		if err := s.applySingBoxRuntime(context.Background()); err != nil {
+			s.ctrl.SetTun(false)
+			s.ctrl.SetBanner(&contract.BannerNotice{
+				Kind: "rollback",
+				Text: err.Error(),
+			})
+		}
 	}
 
 	s.mux = s.buildRouter()
@@ -153,12 +205,15 @@ func (s *Server) Handler() http.Handler {
 	return s
 }
 
-// Close gracefully stops the background telemetry goroutine and closes SQLite storage.
+// Close gracefully stops the background telemetry goroutine, sing-box child process, and SQLite storage.
 func (s *Server) Close() error {
 	var closeErr error
 	s.closeOnce.Do(func() {
 		close(s.stopCh)
 		s.wg.Wait()
+		if s.rt != nil {
+			_ = s.rt.Stop()
+		}
 		if s.stats != nil {
 			closeErr = s.stats.Close()
 		}
@@ -187,15 +242,55 @@ func (s *Server) buildRouter() *http.ServeMux {
 	mux.HandleFunc("POST /api/providers/refresh", s.handleRefreshProviders)
 
 	mux.HandleFunc("POST /api/orgs", s.handleAddOrg)
+	mux.HandleFunc("DELETE /api/orgs", s.handleRemoveOrg)
 	mux.HandleFunc("POST /api/orgs/sync", s.handleSyncOrg)
+	mux.HandleFunc("POST /api/orgs/login/start", s.handleStartOrgLogin)
+	mux.HandleFunc("GET /api/orgs/login/poll", s.handlePollOrgLogin)
+	mux.HandleFunc("POST /api/orgs/import-dir", s.handleImportOrgDir)
 
 	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 	mux.HandleFunc("GET /api/export", s.handleExportConfig)
+	mux.HandleFunc("POST /api/browser/open", s.handleOpenBrowser)
 
 	mux.HandleFunc("/api/", s.handleAPINotFound)
 	mux.HandleFunc("/", s.handleStatic)
 
 	return mux
+}
+
+func (s *Server) shouldManageSingBox() bool {
+	return !s.demoMode && s.realNetworkProbe
+}
+
+func (s *Server) applySingBoxRuntime(ctx context.Context) error {
+	_, _, activeExitID, _, _ := s.ctrl.State()
+	return s.applySingBoxRuntimeWithExit(ctx, activeExitID)
+}
+
+func (s *Server) applySingBoxRuntimeWithExit(ctx context.Context, exitID string) error {
+	if !s.shouldManageSingBox() || s.rt == nil {
+		return nil
+	}
+	tunEnabled, mode, _, _, _ := s.ctrl.State()
+	s.resetClashTotals()
+	return s.rt.ApplyRuntime(ctx, engine.RuntimeApplyRequest{
+		DataDir:      s.dataDir,
+		TunEnabled:   tunEnabled,
+		Orgs:         s.tailnet.ListOrgs(),
+		Nodes:        s.tailnet.ListExitNodes(),
+		ActiveExitID: exitID,
+		Mode:         mode,
+		Rules:        s.rules.ListRules(),
+		Providers:    s.rules.ListProviders(),
+		Settings:     s.getSettings(),
+	})
+}
+
+func (s *Server) resetClashTotals() {
+	s.clashTotalsMu.Lock()
+	s.lastDownloadTotal = 0
+	s.lastUploadTotal = 0
+	s.clashTotalsMu.Unlock()
 }
 
 func (s *Server) handleGetSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -214,7 +309,33 @@ func (s *Server) handleSetTun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Enabled && s.shouldManageSingBox() {
+		if !hasAnyOnlineNode(s.tailnet.ListOrgs(), s.tailnet.ListExitNodes()) {
+			writeJSONError(w, http.StatusBadRequest, "请先挂载包含在线出口节点的 Tailscale 组织")
+			return
+		}
+	}
+
+	tunBefore, _, _, _, _ := s.ctrl.State()
 	s.ctrl.SetTun(req.Enabled)
+
+	if s.shouldManageSingBox() {
+		if err := s.applySingBoxRuntime(r.Context()); err != nil {
+			s.ctrl.SetTun(tunBefore)
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !req.Enabled {
+			s.ctrl.SetConnections(nil)
+			s.resetClashTotals()
+		} else if s.getSettings().AutoVerifyIP {
+			_, _, activeExitID, _, _ := s.ctrl.State()
+			if activeExitID != "" {
+				go s.probeAndSavePublicIPAsync(activeExitID)
+			}
+		}
+	}
+
 	if err := s.saveState(); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -237,6 +358,13 @@ func (s *Server) handleSetMode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.ctrl.SetMode(req.Mode)
+	if s.shouldManageSingBox() && s.rt != nil && s.rt.IsRunning() {
+		if err := s.rt.PatchMode(r.Context(), req.Mode); err != nil {
+			writeJSONError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+	}
+
 	if err := s.saveState(); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -264,13 +392,35 @@ func (s *Server) handleSwitchExit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tunEnabled, _, prevExitID, _, _ := s.ctrl.State()
+	if s.shouldManageSingBox() && tunEnabled {
+		if err := s.applySingBoxRuntimeWithExit(r.Context(), target.ID); err != nil {
+			_ = s.applySingBoxRuntimeWithExit(context.Background(), prevExitID)
+			s.ctrl.SetBanner(&contract.BannerNotice{
+				Kind: "rollback",
+				Text: fmt.Sprintf("切换出口启动内核失败: %v", err),
+			})
+			_ = s.saveState()
+			s.writeSnapshot(w, contract.PeriodLive)
+			return
+		}
+	}
+
 	settings := s.getSettings()
+	verifyIP := settings.AutoVerifyIP && (!s.shouldManageSingBox() || tunEnabled)
+
 	ctx, cancel := context.WithTimeout(r.Context(), exitSwitchTimeout)
 	defer cancel()
 
-	// SwitchExit updates activeExitID or records a rollback BannerNotice on probe failure;
+	// SwitchExitAndProbe updates activeExitID or records a rollback BannerNotice on probe failure;
 	// either outcome returns 200 with the latest DashboardSnapshot so the UI renders the banner.
-	_, _, _ = s.ctrl.SwitchExit(ctx, target, nodes, settings.AutoVerifyIP, defaultMixedProxy)
+	activeID, probedIP, _, probeErr := s.ctrl.SwitchExitAndProbe(ctx, target, nodes, verifyIP, defaultMixedProxy)
+	if probeErr == nil && probedIP != "" {
+		s.tailnet.UpdateNodePublicIP(activeID, probedIP)
+	}
+	if probeErr != nil && s.shouldManageSingBox() && tunEnabled {
+		_ = s.applySingBoxRuntimeWithExit(context.Background(), activeID)
+	}
 
 	if err := s.saveState(); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -300,6 +450,10 @@ func (s *Server) handleAddRule(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := s.reloadRuntimeIfRunning(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if err := s.saveState(); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -316,6 +470,10 @@ func (s *Server) handleToggleRule(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.rules.ToggleRule(strings.TrimSpace(req.RuleID)); err != nil {
 		writeRuleError(w, err)
+		return
+	}
+	if err := s.reloadRuntimeIfRunning(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err := s.saveState(); err != nil {
@@ -336,6 +494,10 @@ func (s *Server) handleMoveRule(w http.ResponseWriter, r *http.Request) {
 		writeRuleError(w, err)
 		return
 	}
+	if err := s.reloadRuntimeIfRunning(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if err := s.saveState(); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -354,6 +516,10 @@ func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
 		writeRuleError(w, err)
 		return
 	}
+	if err := s.reloadRuntimeIfRunning(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if err := s.saveState(); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -370,6 +536,10 @@ func (s *Server) handleImportRules(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := s.rules.ImportText(req.RawText); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.reloadRuntimeIfRunning(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err := s.saveState(); err != nil {
@@ -447,6 +617,10 @@ func (s *Server) handleQuickRule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.ctrl.ApplyQuickRuleToConn(targetConn.ID, matchedLabel, added.Action)
+	if err := s.reloadRuntimeIfRunning(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if err := s.saveState(); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -478,9 +652,14 @@ func (s *Server) handleRefreshProviders(w http.ResponseWriter, r *http.Request) 
 		fetcher = s.fetchProviderPayload
 	}
 
-	if err := s.rules.RefreshAllProviders(r.Context(), fetcher); err != nil {
+	rulesDir := filepath.Join(s.dataDir, "rules")
+	if err := s.rules.RefreshAllProvidersToDir(r.Context(), rulesDir, fetcher, nil); err != nil {
 		_ = s.saveState()
 		writeJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if err := s.reloadRuntimeIfRunning(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err := s.saveState(); err != nil {
@@ -518,6 +697,131 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.ensureActiveExitSelected()
+	if err := s.saveState(); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeSnapshot(w, contract.PeriodLive)
+}
+
+func (s *Server) handleStartOrgLogin(w http.ResponseWriter, r *http.Request) {
+	var req contract.StartOrgLoginRequest
+	if err := decodeOptionalJSON(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	sess, err := s.tailnet.StartLogin(r.Context(), req)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+func (s *Server) handlePollOrgLogin(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "缺少 sessionId 参数")
+		return
+	}
+
+	sess, ok := s.tailnet.PollLogin(sessionID)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("未找到登录会话: %s", sessionID))
+		return
+	}
+
+	if sess.State == "authenticated" {
+		s.ensureActiveExitSelected()
+		if err := s.reloadRuntimeIfRunning(r.Context()); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := s.saveState(); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, sess)
+}
+
+func (s *Server) handleImportOrgDir(w http.ResponseWriter, r *http.Request) {
+	var req contract.ImportOrgStateDirRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if _, _, err := s.tailnet.ImportStateDir(r.Context(), req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	s.ensureActiveExitSelected()
+	if err := s.reloadRuntimeIfRunning(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.saveState(); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeSnapshot(w, contract.PeriodLive)
+}
+
+func (s *Server) handleRemoveOrg(w http.ResponseWriter, r *http.Request) {
+	orgID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if orgID == "" {
+		writeJSONError(w, http.StatusBadRequest, "缺少组织 id 参数")
+		return
+	}
+
+	_, _, activeExitID, _, _ := s.ctrl.State()
+	prevNodes := s.tailnet.ListExitNodes()
+	activeBelongsToRemoved := false
+	for _, n := range prevNodes {
+		if n.ID == activeExitID && n.OrgID == orgID {
+			activeBelongsToRemoved = true
+			break
+		}
+	}
+
+	wasRunning := s.shouldManageSingBox() && s.rt != nil && s.rt.IsRunning()
+	if wasRunning {
+		_ = s.rt.Stop()
+	}
+
+	if err := s.tailnet.RemoveOrg(orgID); err != nil {
+		if wasRunning {
+			_ = s.applySingBoxRuntime(context.Background())
+		}
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	remaining := s.tailnet.ListExitNodes()
+	if activeBelongsToRemoved || activeExitID == "" {
+		nextID := resolveInitialExitID("", remaining)
+		s.ctrl.SetActiveExitID(nextID)
+		if nextID == "" {
+			s.ctrl.SetTun(false)
+			s.ctrl.SetConnections(nil)
+		}
+	} else if len(remaining) == 0 {
+		s.ctrl.SetTun(false)
+		s.ctrl.SetConnections(nil)
+	}
+
+	if s.shouldManageSingBox() {
+		if err := s.applySingBoxRuntime(r.Context()); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
 	if err := s.saveState(); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -534,10 +838,53 @@ func (s *Server) handleSyncOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.tailnet.SyncOrg(req.OrgID); err != nil {
-		writeJSONError(w, http.StatusNotFound, err.Error())
+	if s.demoMode {
+		if err := s.tailnet.SyncOrg(req.OrgID); err != nil {
+			writeJSONError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		if err := s.saveState(); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.writeSnapshot(w, contract.PeriodLive)
 		return
 	}
+
+	targetID := strings.TrimSpace(req.OrgID)
+	var orgIDs []string
+	if targetID != "" {
+		orgIDs = []string{targetID}
+	} else {
+		for _, org := range s.tailnet.ListOrgs() {
+			orgIDs = append(orgIDs, org.ID)
+		}
+	}
+
+	tunEnabled, _, _, _, _ := s.ctrl.State()
+	wasRunning := s.shouldManageSingBox() && s.rt != nil && s.rt.IsRunning()
+	if wasRunning {
+		_ = s.rt.Stop()
+	}
+
+	for _, id := range orgIDs {
+		if _, err := s.tailnet.RefreshOrgFromTsnet(r.Context(), id); err != nil {
+			if wasRunning && tunEnabled {
+				_ = s.applySingBoxRuntime(context.Background())
+			}
+			writeJSONError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+	}
+
+	s.ensureActiveExitSelected()
+	if s.shouldManageSingBox() && tunEnabled {
+		if err := s.applySingBoxRuntime(r.Context()); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
 	if err := s.saveState(); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -558,7 +905,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, mode, activeExitID, _, _ := s.ctrl.State()
-	if _, err := engine.GenerateSingBoxConfig(
+	if _, err := engine.GenerateSingBoxConfigWithOptions(
 		s.tailnet.ListOrgs(),
 		s.tailnet.ListExitNodes(),
 		activeExitID,
@@ -566,6 +913,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		s.rules.ListRules(),
 		s.rules.ListProviders(),
 		next,
+		engine.ConfigOptions{RulesDir: filepath.Join(s.dataDir, "rules")},
 	); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -575,6 +923,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	s.settings = next
 	s.mu.Unlock()
 
+	if err := s.reloadRuntimeIfRunning(r.Context()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if err := s.saveState(); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -590,6 +942,39 @@ func (s *Server) handleExportConfig(w http.ResponseWriter, _ *http.Request) {
 		time.Now(),
 	)
 	writeJSON(w, http.StatusOK, exported)
+}
+
+func (s *Server) handleOpenBrowser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := syswin.OpenBrowser(req.URL); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) probeAndSavePublicIPAsync(exitID string) {
+	nodes := s.tailnet.ListExitNodes()
+	target, ok := findExitNodeByID(nodes, exitID)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), exitSwitchTimeout)
+	defer cancel()
+
+	prober := engine.NewDefaultProber(s.realNetworkProbe)
+	ip, err := prober.ProbePublicIP(ctx, defaultMixedProxy, target)
+	if err != nil || strings.TrimSpace(ip) == "" {
+		return
+	}
+	s.tailnet.UpdateNodePublicIP(exitID, ip)
+	_ = s.saveState()
 }
 
 func (s *Server) handleAPINotFound(w http.ResponseWriter, _ *http.Request) {
@@ -621,6 +1006,28 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(indexBytes)
+}
+
+func (s *Server) reloadRuntimeIfRunning(ctx context.Context) error {
+	if !s.shouldManageSingBox() {
+		return nil
+	}
+	tunEnabled, _, _, _, _ := s.ctrl.State()
+	if !tunEnabled {
+		return nil
+	}
+	return s.applySingBoxRuntime(ctx)
+}
+
+func (s *Server) ensureActiveExitSelected() {
+	_, _, activeExitID, _, _ := s.ctrl.State()
+	nodes := s.tailnet.ListExitNodes()
+	if activeExitID != "" {
+		if _, ok := findExitNodeByID(nodes, activeExitID); ok {
+			return
+		}
+	}
+	s.ctrl.SetActiveExitID(resolveInitialExitID("", nodes))
 }
 
 func (s *Server) writeSnapshot(w http.ResponseWriter, period contract.TrafficPeriodKey) {
@@ -659,6 +1066,8 @@ func (s *Server) buildSnapshot(period contract.TrafficPeriodKey) (contract.Dashb
 
 	return contract.DashboardSnapshot{
 		TunEnabled:      tunEnabled,
+		CoreAvailable:   s.coreAvailable,
+		CoreVersion:     s.coreVersion,
 		RoutingMode:     mode,
 		ActiveExitID:    activeExitID,
 		VerifyingExitID: verifyingID,
@@ -690,6 +1099,7 @@ func (s *Server) saveState() error {
 		RoutingMode:  mode,
 		ActiveExitID: activeExitID,
 		Orgs:         s.tailnet.ListOrgs(),
+		ExitNodes:    s.tailnet.ListExitNodes(),
 		CustomRules:  s.rules.CustomRules(),
 		Providers:    s.rules.ListProviders(),
 		Settings:     s.getSettings(),
@@ -708,29 +1118,101 @@ func (s *Server) runTelemetrySampler() {
 		case <-s.stopCh:
 			return
 		case now := <-ticker.C:
-			tunEnabled, _, activeExitID, _, _ := s.ctrl.State()
-			if !tunEnabled {
+			if s.demoMode {
+				s.sampleDemoTick(now)
 				continue
 			}
-
-			nodes := s.tailnet.ListExitNodes()
-			active, ok := findExitNodeByID(nodes, activeExitID)
-			if !ok && len(nodes) > 0 {
-				active = nodes[0]
-			}
-			if active.ID == "" {
-				continue
-			}
-
-			seq := float64(s.samplerSeq.Add(1))
-			downMB := math.Max(0.4, 2.2+1.2*math.Sin(seq*0.45)+0.4*math.Cos(seq*0.8))
-			upMB := math.Max(0.1, 0.35+0.18*math.Sin(seq*0.45+0.6))
-			downBytes := int64(math.Round(downMB * float64(bytesPerMB)))
-			upBytes := int64(math.Round(upMB * float64(bytesPerMB)))
-
-			_ = s.stats.RecordTick(now, active.OrgID, active.ID, downBytes, upBytes)
+			s.sampleRealTick(now)
 		}
 	}
+}
+
+func (s *Server) sampleDemoTick(now time.Time) {
+	tunEnabled, _, activeExitID, _, _ := s.ctrl.State()
+	if !tunEnabled {
+		return
+	}
+
+	nodes := s.tailnet.ListExitNodes()
+	active, ok := findExitNodeByID(nodes, activeExitID)
+	if !ok && len(nodes) > 0 {
+		active = nodes[0]
+	}
+	if active.ID == "" {
+		return
+	}
+
+	seq := float64(s.samplerSeq.Add(1))
+	downMB := math.Max(0.4, 2.2+1.2*math.Sin(seq*0.45)+0.4*math.Cos(seq*0.8))
+	upMB := math.Max(0.1, 0.35+0.18*math.Sin(seq*0.45+0.6))
+	downBytes := int64(math.Round(downMB * float64(bytesPerMB)))
+	upBytes := int64(math.Round(upMB * float64(bytesPerMB)))
+
+	_ = s.stats.RecordTick(now, active.OrgID, active.ID, downBytes, upBytes)
+}
+
+func (s *Server) sampleRealTick(now time.Time) {
+	tunEnabled, _, activeExitID, _, _ := s.ctrl.State()
+	nodes := s.tailnet.ListExitNodes()
+	active, ok := findExitNodeByID(nodes, activeExitID)
+	if !ok && len(nodes) > 0 {
+		active = nodes[0]
+	}
+
+	if !tunEnabled || s.rt == nil || !s.rt.IsRunning() {
+		s.ctrl.SetConnections(nil)
+		s.resetClashTotals()
+		if active.ID != "" {
+			_ = s.stats.RecordTick(now, active.OrgID, active.ID, 0, 0)
+		}
+		return
+	}
+
+	snap, err := s.clashSampler.Fetch(s.rt.ClashAPIAddr())
+	if err != nil {
+		return
+	}
+	s.ctrl.SetConnections(snap.Connections)
+
+	if active.ID == "" {
+		return
+	}
+
+	s.clashTotalsMu.Lock()
+	var deltaDown, deltaUp int64
+	if snap.DownloadTotal >= s.lastDownloadTotal {
+		deltaDown = snap.DownloadTotal - s.lastDownloadTotal
+	} else {
+		deltaDown = snap.DownloadTotal
+	}
+	if snap.UploadTotal >= s.lastUploadTotal {
+		deltaUp = snap.UploadTotal - s.lastUploadTotal
+	} else {
+		deltaUp = snap.UploadTotal
+	}
+	s.lastDownloadTotal = snap.DownloadTotal
+	s.lastUploadTotal = snap.UploadTotal
+	s.clashTotalsMu.Unlock()
+
+	_ = s.stats.RecordTick(now, active.OrgID, active.ID, deltaDown, deltaUp)
+}
+
+func hasAnyOnlineNode(orgs []contract.Organization, nodes []contract.ExitNode) bool {
+	if len(orgs) == 0 || len(nodes) == 0 {
+		return false
+	}
+	orgIDs := make(map[string]bool, len(orgs))
+	for _, org := range orgs {
+		if org.ID != "" {
+			orgIDs[org.ID] = true
+		}
+	}
+	for _, n := range nodes {
+		if n.Online && strings.TrimSpace(n.TailscaleIP) != "" && orgIDs[n.OrgID] {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveInitialExitID(savedID string, nodes []contract.ExitNode) string {
@@ -778,8 +1260,11 @@ func isAllowedOrigin(origin string) bool {
 	if err != nil {
 		return false
 	}
+	if strings.EqualFold(parsed.Scheme, "wails") {
+		return true
+	}
 	host := strings.ToLower(parsed.Hostname())
-	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "wails" || host == "wails.localhost" || strings.HasSuffix(host, ".wails.localhost") {
 		return true
 	}
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {

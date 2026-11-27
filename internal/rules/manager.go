@@ -84,8 +84,9 @@ func defaultHeadLockedRules() []contract.Rule {
 		{
 			ID:      "builtin-head-1",
 			Type:    contract.RuleProcessName,
-			Payload: "tailscaled.exe, verge-mihomo.exe, clash-verge.exe",
+			Payload: "tailscaled.exe, tailscale-ipn.exe, verge-mihomo.exe, clash-verge.exe, Tailscale, IPNExtension, tailscaled, verge-mihomo, clash-verge, mihomo",
 			Action:  contract.ActionDirect,
+			Hits:    0,
 			Enabled: true,
 			Locked:  true,
 		},
@@ -94,6 +95,7 @@ func defaultHeadLockedRules() []contract.Rule {
 			Type:    contract.RuleIPCIDR,
 			Payload: "100.64.0.0/10, 192.168.0.0/16, 10.0.0.0/8",
 			Action:  contract.ActionDirect,
+			Hits:    0,
 			Enabled: true,
 			Locked:  true,
 		},
@@ -107,6 +109,7 @@ func defaultTailLockedRules() []contract.Rule {
 			Type:    contract.RuleSet,
 			Payload: "geosite-cn, geoip-cn",
 			Action:  contract.ActionDirect,
+			Hits:    0,
 			Enabled: true,
 			Locked:  true,
 		},
@@ -115,6 +118,7 @@ func defaultTailLockedRules() []contract.Rule {
 			Type:    contract.RuleFinal,
 			Payload: "默认兜底",
 			Action:  contract.ActionExit,
+			Hits:    0,
 			Enabled: true,
 			Locked:  true,
 		},
@@ -128,6 +132,7 @@ func defaultCustomRules() []contract.Rule {
 			Type:    contract.RuleProcessName,
 			Payload: "YuanShen.exe, HYP.exe",
 			Action:  contract.ActionDirect,
+			Hits:    0,
 			Enabled: true,
 		},
 		{
@@ -135,6 +140,7 @@ func defaultCustomRules() []contract.Rule {
 			Type:    contract.RuleProcessName,
 			Payload: "cloudflared.exe",
 			Action:  contract.ActionDirect,
+			Hits:    0,
 			Enabled: true,
 		},
 		{
@@ -142,6 +148,7 @@ func defaultCustomRules() []contract.Rule {
 			Type:    contract.RuleIPCIDR,
 			Payload: "8.128.0.0/10",
 			Action:  contract.ActionDirect,
+			Hits:    0,
 			Enabled: true,
 		},
 		{
@@ -149,6 +156,7 @@ func defaultCustomRules() []contract.Rule {
 			Type:    contract.RuleDomainSuffix,
 			Payload: "chatgpt.com, openai.com, claude.ai",
 			Action:  contract.ActionExit,
+			Hits:    0,
 			Enabled: true,
 		},
 		{
@@ -156,6 +164,7 @@ func defaultCustomRules() []contract.Rule {
 			Type:    contract.RuleDomainSuffix,
 			Payload: "netflix.com, nflxvideo.net",
 			Action:  contract.ActionFallbackProxy,
+			Hits:    0,
 			Enabled: true,
 		},
 		{
@@ -163,6 +172,7 @@ func defaultCustomRules() []contract.Rule {
 			Type:    contract.RuleSet,
 			Payload: "geosite-google",
 			Action:  contract.ActionExit,
+			Hits:    0,
 			Enabled: true,
 		},
 		{
@@ -170,6 +180,7 @@ func defaultCustomRules() []contract.Rule {
 			Type:    contract.RuleSet,
 			Payload: "geosite-category-ads-all",
 			Action:  contract.ActionReject,
+			Hits:    0,
 			Enabled: true,
 		},
 	}

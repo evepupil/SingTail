@@ -21,8 +21,8 @@ func TestLoadOrDefaultWhenMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadOrDefault failed: %v", err)
 	}
-	if !got.TunEnabled {
-		t.Fatalf("expected default TunEnabled=true")
+	if got.TunEnabled {
+		t.Fatalf("expected default TunEnabled=false")
 	}
 	if got.RoutingMode != contract.ModeRule {
 		t.Fatalf("expected default RoutingMode=%q, got %q", contract.ModeRule, got.RoutingMode)
@@ -33,8 +33,11 @@ func TestLoadOrDefaultWhenMissing(t *testing.T) {
 	if !got.Settings.AutoStartService || !got.Settings.AutoVerifyIP || got.Settings.AutoUpdateRulesDays != 14 {
 		t.Fatalf("unexpected system settings defaults: %+v", got.Settings)
 	}
-	if got.Orgs == nil || got.CustomRules == nil || got.Providers == nil {
+	if got.Orgs == nil || got.ExitNodes == nil || got.CustomRules == nil || got.Providers == nil {
 		t.Fatalf("expected non-nil empty slices in default state")
+	}
+	if len(got.Orgs) != 0 || len(got.ExitNodes) != 0 {
+		t.Fatalf("expected empty Orgs and ExitNodes in default state, got orgs=%d nodes=%d", len(got.Orgs), len(got.ExitNodes))
 	}
 }
 
@@ -55,6 +58,22 @@ func TestSaveAndLoadAtomic(t *testing.T) {
 				LocalTailscaleIP: "100.64.0.12",
 				StateDir:         `C:\ProgramData\SingTail\ts-state\org-work`,
 				LastSync:         "2026-11-27T12:00:00Z",
+			},
+		},
+		ExitNodes: []contract.ExitNode{
+			{
+				ID:          "ts-hk-cloud",
+				OrgID:       "org-work",
+				OrgName:     "Acme Corp",
+				Hostname:    "hk-cloud",
+				Label:       "Hong Kong · hk-cloud",
+				TailscaleIP: "100.64.0.99",
+				PublicIP:    "43.153.82.19",
+				Region:      "HK · Hong Kong",
+				RelayMode:   "直连",
+				LatencyMs:   35,
+				Online:      true,
+				Healthy:     true,
 			},
 		},
 		CustomRules: []contract.Rule{
@@ -104,6 +123,9 @@ func TestSaveAndLoadAtomic(t *testing.T) {
 	}
 	if len(got.Orgs) != 1 || got.Orgs[0].StateDir != want.Orgs[0].StateDir {
 		t.Fatalf("orgs mismatch: got %+v", got.Orgs)
+	}
+	if len(got.ExitNodes) != 1 || got.ExitNodes[0] != want.ExitNodes[0] {
+		t.Fatalf("exitNodes mismatch: got %+v, want %+v", got.ExitNodes, want.ExitNodes)
 	}
 	if len(got.CustomRules) != 1 || got.CustomRules[0].Payload != "openai.com" {
 		t.Fatalf("rules mismatch: got %+v", got.CustomRules)

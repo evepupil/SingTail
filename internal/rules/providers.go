@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -131,9 +133,13 @@ func (m *Manager) AddProvider(req contract.AddProviderRequest) (contract.RulePro
 }
 
 // RefreshAllProviders updates provider timestamps or fetches and validates .srs payloads via fetcher.
-// When fetcher is non-nil, each provider payload must be at least 8 bytes; failed providers keep their
-// prior state while healthy providers are updated, and an aggregated error is returned.
 func (m *Manager) RefreshAllProviders(ctx context.Context, fetcher func(ctx context.Context, url string) ([]byte, error)) error {
+	return m.RefreshAllProvidersToDir(ctx, "", fetcher, nil)
+}
+
+// RefreshAllProvidersToDir fetches and validates .srs payloads, optionally persisting validated files
+// atomically into rulesDir as <tag>.srs via a temporary <tag>.srs.tmp file.
+func (m *Manager) RefreshAllProvidersToDir(ctx context.Context, rulesDir string, fetcher func(ctx context.Context, url string) ([]byte, error), validateFile func(tmpPath string) error) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -147,6 +153,13 @@ func (m *Manager) RefreshAllProviders(ctx context.Context, fetcher func(ctx cont
 			m.providers[i].UpdatedAt = nowStr
 		}
 		return nil
+	}
+
+	trimmedDir := strings.TrimSpace(rulesDir)
+	if trimmedDir != "" {
+		if err := os.MkdirAll(trimmedDir, 0o755); err != nil {
+			return fmt.Errorf("create rules directory: %w", err)
+		}
 	}
 
 	m.mu.RLock()
@@ -167,6 +180,32 @@ func (m *Manager) RefreshAllProviders(ctx context.Context, fetcher func(ctx cont
 			errs = append(errs, fmt.Errorf("provider %s payload too short (%d bytes < %d)", p.Tag, len(data), minSRSBytes))
 			continue
 		}
+
+		if trimmedDir != "" {
+			if p.Tag == "" || strings.ContainsAny(p.Tag, "/\\") || strings.Contains(p.Tag, "..") {
+				errs = append(errs, fmt.Errorf("provider %s has invalid tag for file path", p.Tag))
+				continue
+			}
+			tmpPath := filepath.Join(trimmedDir, p.Tag+".srs.tmp")
+			finalPath := filepath.Join(trimmedDir, p.Tag+".srs")
+			if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+				errs = append(errs, fmt.Errorf("provider %s write temp file failed: %w", p.Tag, err))
+				continue
+			}
+			if validateFile != nil {
+				if err := validateFile(tmpPath); err != nil {
+					_ = os.Remove(tmpPath)
+					errs = append(errs, fmt.Errorf("provider %s validation failed: %w", p.Tag, err))
+					continue
+				}
+			}
+			if err := os.Rename(tmpPath, finalPath); err != nil {
+				_ = os.Remove(tmpPath)
+				errs = append(errs, fmt.Errorf("provider %s rename failed: %w", p.Tag, err))
+				continue
+			}
+		}
+
 		succeeded[p.ID] = true
 	}
 

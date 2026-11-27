@@ -3,6 +3,8 @@ package rules
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -25,11 +27,15 @@ func TestNewManagerDefaults(t *testing.T) {
 	}
 
 	// Verify head locked rules.
+	wantHead1 := "tailscaled.exe, tailscale-ipn.exe, verge-mihomo.exe, clash-verge.exe, Tailscale, IPNExtension, tailscaled, verge-mihomo, clash-verge, mihomo"
 	if !all[0].Locked || all[0].Type != contract.RuleProcessName || all[0].Action != contract.ActionDirect ||
-		!strings.Contains(all[0].Payload, "tailscaled.exe") ||
-		!strings.Contains(all[0].Payload, "verge-mihomo.exe") ||
-		!strings.Contains(all[0].Payload, "clash-verge.exe") {
+		all[0].Payload != wantHead1 {
 		t.Fatalf("unexpected head locked rule[0]: %+v", all[0])
+	}
+	for _, r := range all {
+		if r.Hits != 0 {
+			t.Fatalf("expected initial rule %s Hits=0, got %d", r.ID, r.Hits)
+		}
 	}
 	if !all[1].Locked || all[1].Type != contract.RuleIPCIDR || all[1].Action != contract.ActionDirect ||
 		!strings.Contains(all[1].Payload, "100.64.0.0/10") ||
@@ -400,6 +406,67 @@ func TestProvidersAndRefresh(t *testing.T) {
 		}
 		if provs[2].UpdatedAt != "old-err" {
 			t.Fatalf("errored provider UpdatedAt = %q, want preserved %q", provs[2].UpdatedAt, "old-err")
+		}
+	})
+
+	t.Run("RefreshAllProvidersToDir atomic write and validation", func(t *testing.T) {
+		rulesDir := filepath.Join(t.TempDir(), "rules")
+		if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+			t.Fatalf("mkdir rulesDir: %v", err)
+		}
+		existingBadFile := filepath.Join(rulesDir, "bad-set.srs")
+		if err := os.WriteFile(existingBadFile, []byte("PRIOR-GOOD-SRS"), 0o644); err != nil {
+			t.Fatalf("seed existing bad-set.srs: %v", err)
+		}
+
+		mgr := NewManager(nil, []contract.RuleProvider{
+			{ID: "p-good", Tag: "good-set", URL: "https://example.com/good.srs", UpdatedAt: "old-good"},
+			{ID: "p-bad", Tag: "bad-set", URL: "https://example.com/bad.srs", UpdatedAt: "old-bad"},
+		})
+
+		err := mgr.RefreshAllProvidersToDir(
+			context.Background(),
+			rulesDir,
+			func(_ context.Context, rawURL string) ([]byte, error) {
+				if strings.HasSuffix(rawURL, "good.srs") {
+					return []byte("SRS-GOOD-DATA"), nil
+				}
+				return []byte("SRS-INVALID-DATA"), nil
+			},
+			func(tmpPath string) error {
+				raw, err := os.ReadFile(tmpPath)
+				if err != nil {
+					return err
+				}
+				if strings.Contains(string(raw), "INVALID") {
+					return errors.New("corrupt srs header")
+				}
+				return nil
+			},
+		)
+		if err == nil || !strings.Contains(err.Error(), "bad-set") {
+			t.Fatalf("expected validation error for bad-set, got %v", err)
+		}
+
+		goodBytes, err := os.ReadFile(filepath.Join(rulesDir, "good-set.srs"))
+		if err != nil || string(goodBytes) != "SRS-GOOD-DATA" {
+			t.Fatalf("expected good-set.srs written atomically, got %q err=%v", string(goodBytes), err)
+		}
+		if _, err := os.Stat(filepath.Join(rulesDir, "good-set.srs.tmp")); !os.IsNotExist(err) {
+			t.Fatalf("expected good-set.srs.tmp removed, stat err=%v", err)
+		}
+
+		badBytes, err := os.ReadFile(existingBadFile)
+		if err != nil || string(badBytes) != "PRIOR-GOOD-SRS" {
+			t.Fatalf("expected prior bad-set.srs preserved on validation failure, got %q err=%v", string(badBytes), err)
+		}
+		if _, err := os.Stat(filepath.Join(rulesDir, "bad-set.srs.tmp")); !os.IsNotExist(err) {
+			t.Fatalf("expected bad-set.srs.tmp removed after validation failure, stat err=%v", err)
+		}
+
+		provs := mgr.ListProviders()
+		if provs[0].UpdatedAt == "old-good" || provs[1].UpdatedAt != "old-bad" {
+			t.Fatalf("unexpected provider timestamps: %+v", provs)
 		}
 	})
 }

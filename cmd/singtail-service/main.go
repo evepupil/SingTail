@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -28,11 +29,12 @@ const (
 
 func main() {
 	listenAddr := flag.String("listen", defaultListenAddr, "HTTP listen address")
-	dataDir := flag.String("data-dir", defaultDataDir, "directory for state and traffic database")
+	dataDir := flag.String("data-dir", "", "directory for state and traffic database")
 	webDir := flag.String("web-dir", "", "optional static frontend directory to serve")
-	install := flag.Bool("install", false, "install Windows service")
-	uninstall := flag.Bool("uninstall", false, "uninstall Windows service")
-	realProbe := flag.Bool("real-probe", false, "enable real HTTP egress probing and provider fetching")
+	install := flag.Bool("install", false, "install background service")
+	uninstall := flag.Bool("uninstall", false, "uninstall background service")
+	demo := flag.Bool("demo", false, "enable demo mock data for UI preview")
+	realProbe := flag.Bool("real-probe", true, "enable real network probing and sing-box runtime")
 	flag.Parse()
 
 	if *install && *uninstall {
@@ -57,7 +59,7 @@ func main() {
 
 	if syswin.IsWindowsService() {
 		err := syswin.RunService(func(stopCh <-chan struct{}) error {
-			return serve(stopCh, *listenAddr, resolvedDataDir, *webDir, *realProbe)
+			return serve(stopCh, *listenAddr, resolvedDataDir, *webDir, *realProbe, *demo)
 		})
 		if err != nil {
 			log.Fatalf("windows service failed: %v", err)
@@ -68,25 +70,82 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := serve(ctx.Done(), *listenAddr, resolvedDataDir, *webDir, *realProbe); err != nil {
+	if err := serve(ctx.Done(), *listenAddr, resolvedDataDir, *webDir, *realProbe, *demo); err != nil {
 		log.Fatalf("singtail-service exited with error: %v", err)
 	}
 }
 
 func resolveServiceDataDir(raw string, isService bool) string {
 	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		trimmed = defaultDataDir
-	}
-	if isService && !filepath.IsAbs(trimmed) {
-		if exe, err := os.Executable(); err == nil {
-			return filepath.Join(filepath.Dir(exe), trimmed)
+	if trimmed != "" {
+		if isService && !filepath.IsAbs(trimmed) {
+			if pd := strings.TrimSpace(os.Getenv("ProgramData")); pd != "" {
+				return filepath.Join(pd, "SingTail")
+			}
+			if exe, err := os.Executable(); err == nil {
+				return filepath.Join(filepath.Dir(exe), trimmed)
+			}
 		}
+		return filepath.Clean(trimmed)
 	}
-	return filepath.Clean(trimmed)
+
+	switch runtime.GOOS {
+	case "windows":
+		if isService {
+			if pd := strings.TrimSpace(os.Getenv("ProgramData")); pd != "" {
+				return filepath.Join(pd, "SingTail")
+			}
+		}
+		if exe, err := os.Executable(); err == nil {
+			exeDir := filepath.Dir(exe)
+			portable := filepath.Join(exeDir, "data")
+			if !isProgramFilesDir(exeDir) && isDirWritable(portable) {
+				return portable
+			}
+		}
+		if localAppData := strings.TrimSpace(os.Getenv("LocalAppData")); localAppData != "" {
+			return filepath.Join(localAppData, "SingTail")
+		}
+		return defaultDataDir
+	case "darwin":
+		if os.Geteuid() == 0 {
+			return "/Library/Application Support/SingTail"
+		}
+		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+			return filepath.Join(home, "Library", "Application Support", "SingTail")
+		}
+		return defaultDataDir
+	default:
+		if os.Geteuid() == 0 {
+			return "/var/lib/singtail"
+		}
+		if cfgDir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(cfgDir) != "" {
+			return filepath.Join(cfgDir, "SingTail")
+		}
+		return defaultDataDir
+	}
 }
 
-func serve(stopCh <-chan struct{}, listenAddr, dataDir, webDir string, realProbe bool) error {
+func isProgramFilesDir(dir string) bool {
+	lower := strings.ToLower(filepath.Clean(dir))
+	return strings.Contains(lower, `\program files`) || strings.Contains(lower, `/program files`)
+}
+
+func isDirWritable(dir string) bool {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false
+	}
+	probe, err := os.CreateTemp(dir, ".write-check-*")
+	if err != nil {
+		return false
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	return true
+}
+
+func serve(stopCh <-chan struct{}, listenAddr, dataDir, webDir string, realProbe, demo bool) error {
 	var staticFS fs.FS
 	if trimmedWeb := strings.TrimSpace(webDir); trimmedWeb != "" {
 		info, err := os.Stat(trimmedWeb)
@@ -99,7 +158,12 @@ func serve(stopCh <-chan struct{}, listenAddr, dataDir, webDir string, realProbe
 		staticFS = os.DirFS(trimmedWeb)
 	}
 
-	srv, err := daemon.NewServer(dataDir, staticFS, realProbe)
+	srv, err := daemon.NewServerWithOptions(daemon.Options{
+		DataDir:          dataDir,
+		StaticFS:         staticFS,
+		RealNetworkProbe: realProbe,
+		DemoMode:         demo,
+	})
 	if err != nil {
 		return err
 	}
@@ -120,7 +184,7 @@ func serve(stopCh <-chan struct{}, listenAddr, dataDir, webDir string, realProbe
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("singtail-service listening on http://%s (data=%s)", ln.Addr().String(), dataDir)
+		log.Printf("singtail-service listening on http://%s (data=%s, demo=%v, realProbe=%v)", ln.Addr().String(), dataDir, demo, realProbe)
 		if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return

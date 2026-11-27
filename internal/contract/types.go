@@ -45,6 +45,7 @@ type Organization struct {
 	Name             string `json:"name"`
 	Account          string `json:"account"`
 	LocalTailscaleIP string `json:"localTailscaleIp"`
+	ControlURL       string `json:"controlUrl,omitempty"`
 	StateDir         string `json:"stateDir,omitempty"`
 	LastSync         string `json:"lastSync"`
 }
@@ -63,6 +64,16 @@ type ExitNode struct {
 	LatencyMs   int    `json:"latencyMs"`
 	Online      bool   `json:"online"`
 	Healthy     bool   `json:"healthy"`
+}
+
+// OrgLoginSession tracks an interactive tsnet OAuth login in progress.
+type OrgLoginSession struct {
+	SessionID string `json:"sessionId"`
+	State     string `json:"state"` // "starting" | "auth_url" | "authenticated" | "error"
+	AuthURL   string `json:"authUrl,omitempty"`
+	Error     string `json:"error,omitempty"`
+	OrgName   string `json:"orgName,omitempty"`
+	NodeCount int    `json:"nodeCount,omitempty"`
 }
 
 // Rule represents an ordered traffic routing rule.
@@ -92,7 +103,7 @@ type RunningApp struct {
 	Path    string `json:"path"`
 }
 
-// LiveConnection represents an active network session observed by the engine.
+// LiveConnection represents an active network session observed from sing-box Clash API.
 type LiveConnection struct {
 	ID          string     `json:"id"`
 	Process     string     `json:"process"`
@@ -135,7 +146,7 @@ type TrafficReport struct {
 	ByOrg           []TrafficBreakdownItem `json:"byOrg"`
 }
 
-// BannerNotice surfaces active verification or rollback alerts in the UI.
+// BannerNotice surfaces active verification, runtime error, or rollback alerts in the UI.
 type BannerNotice struct {
 	Kind string `json:"kind"` // "verifying" | "rollback"
 	Text string `json:"text"`
@@ -153,6 +164,8 @@ type SystemSettings struct {
 // DashboardSnapshot returns the full reactive state required by the desktop UI.
 type DashboardSnapshot struct {
 	TunEnabled      bool             `json:"tunEnabled"`
+	CoreAvailable   bool             `json:"coreAvailable"`
+	CoreVersion     string           `json:"coreVersion,omitempty"`
 	RoutingMode     RoutingMode      `json:"routingMode"`
 	ActiveExitID    string           `json:"activeExitId"`
 	VerifyingExitID string           `json:"verifyingExitId,omitempty"`
@@ -236,6 +249,17 @@ type AddProviderRequest struct {
 	URL        string `json:"url"`
 }
 
+type StartOrgLoginRequest struct {
+	Alias      string `json:"alias"`
+	ControlURL string `json:"controlUrl,omitempty"`
+}
+
+type ImportOrgStateDirRequest struct {
+	SourceDir string `json:"sourceDir"`
+	Alias     string `json:"alias,omitempty"`
+}
+
+// AddOrgRequest is retained for manual/headless org registration in automated tests.
 type AddOrgRequest struct {
 	Name         string `json:"name"`
 	Account      string `json:"account"`

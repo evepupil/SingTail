@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package syswin
 
@@ -18,12 +18,12 @@ const (
 	ServiceDescription = "SingTail background daemon managing multi-tailnet exit nodes and sing-box TUN routing."
 )
 
-// InstallService is a safe no-op on non-Windows hosts.
+// InstallService is a safe no-op on generic Unix hosts.
 func InstallService(_ string) error {
 	return nil
 }
 
-// UninstallService is a safe no-op on non-Windows hosts.
+// UninstallService is a safe no-op on generic Unix hosts.
 func UninstallService() error {
 	return nil
 }

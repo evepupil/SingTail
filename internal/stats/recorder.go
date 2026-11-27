@@ -1,12 +1,44 @@
 package stats
 
 import (
+	"database/sql"
 	"fmt"
 	"math"
+	"runtime"
+	"sync"
 	"time"
 
 	"github.com/singtail/singtail/internal/contract"
 )
+
+var liveInitialized sync.Map
+
+func ensureLiveZeroLocked(s *Store) {
+	if s == nil || s.db == nil {
+		return
+	}
+	if _, ok := liveInitialized.Load(s.db); ok {
+		return
+	}
+	for i := range s.liveDown {
+		s.liveDown[i] = 0
+	}
+	for i := range s.liveUp {
+		s.liveUp[i] = 0
+	}
+	markLiveInitialized(s)
+}
+
+func markLiveInitialized(s *Store) {
+	if s == nil || s.db == nil {
+		return
+	}
+	if _, loaded := liveInitialized.LoadOrStore(s.db, struct{}{}); !loaded {
+		runtime.AddCleanup(s, func(db *sql.DB) {
+			liveInitialized.Delete(db)
+		}, s.db)
+	}
+}
 
 type orgNodeKey struct {
 	orgID  string
@@ -22,6 +54,13 @@ type bytePair struct {
 func (s *Store) LiveHistory() (downMBps []float64, upMBps []float64) {
 	if s == nil {
 		return make([]float64, liveHistoryLen), make([]float64, liveHistoryLen)
+	}
+	if s.db != nil {
+		if _, ok := liveInitialized.Load(s.db); !ok {
+			s.mu.Lock()
+			ensureLiveZeroLocked(s)
+			s.mu.Unlock()
+		}
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -117,6 +156,8 @@ func (s *Store) pushLivePoint(downMB, upMB float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	ensureLiveZeroLocked(s)
+
 	if len(s.liveDown) < liveHistoryLen {
 		s.liveDown = append(s.liveDown, downMB)
 	} else {
@@ -137,6 +178,7 @@ func (s *Store) SeedDemoIfEmpty(now time.Time, orgs []contract.Organization, nod
 	if s == nil || s.db == nil {
 		return fmt.Errorf("stats: store is closed")
 	}
+	markLiveInitialized(s)
 
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM traffic_monthly;`).Scan(&count); err != nil {

@@ -1,5 +1,5 @@
 // Package engine generates sing-box configurations, probes exit egress IPs,
-// and orchestrates exit-node switching with automatic rollback.
+// manages the sing-box subprocess and Clash API, and orchestrates exit switching.
 package engine
 
 import (
@@ -113,8 +113,9 @@ func fetchIP(ctx context.Context, client *http.Client, endpoint string) (string,
 	}
 
 	candidate := strings.TrimSpace(string(body))
-	if net.ParseIP(candidate) == nil {
+	parsed := net.ParseIP(candidate)
+	if parsed == nil || parsed.IsUnspecified() {
 		return "", fmt.Errorf("invalid IP response %q from %s", candidate, endpoint)
 	}
-	return candidate, nil
+	return parsed.String(), nil
 }

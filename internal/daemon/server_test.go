@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -45,12 +47,103 @@ func decodeSnapshot(t *testing.T, rec *httptest.ResponseRecorder) contract.Dashb
 	return snap
 }
 
-func TestDaemonSnapshotPeriodsAndPersistence(t *testing.T) {
+func newDemoServer(t *testing.T, dataDir string) *Server {
+	t.Helper()
+	srv, err := NewServerWithOptions(Options{
+		DataDir:  dataDir,
+		DemoMode: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithOptions(demo) failed: %v", err)
+	}
+	return srv
+}
+
+func TestDaemonProductionZeroMockInitialStateAndOrgDelete(t *testing.T) {
 	dataDir := t.TempDir()
 	srv, err := NewServer(dataDir, nil, false)
 	if err != nil {
-		t.Fatalf("NewServer failed: %v", err)
+		t.Fatalf("NewServer production mode failed: %v", err)
 	}
+	defer func() { _ = srv.Close() }()
+
+	snap := decodeSnapshot(t, doReq(t, srv, http.MethodGet, "/api/snapshot?period=live", nil))
+	if snap.TunEnabled {
+		t.Fatal("expected TunEnabled=false in fresh production state")
+	}
+	if len(snap.Orgs) != 0 {
+		t.Fatalf("expected 0 orgs in fresh production mode, got %d", len(snap.Orgs))
+	}
+	if len(snap.ExitNodes) != 0 {
+		t.Fatalf("expected 0 exit nodes in fresh production mode, got %d", len(snap.ExitNodes))
+	}
+	if len(snap.Connections) != 0 {
+		t.Fatalf("expected 0 connections in fresh production mode, got %d", len(snap.Connections))
+	}
+	if snap.Traffic.TotalGB != 0 {
+		t.Fatalf("expected 0 TotalGB in fresh production mode, got %v", snap.Traffic.TotalGB)
+	}
+	for i, v := range snap.Traffic.LiveDownHistory {
+		if v != 0 {
+			t.Fatalf("expected LiveDownHistory[%d] == 0, got %v", i, v)
+		}
+	}
+	for _, r := range snap.Rules {
+		if r.Hits != 0 {
+			t.Fatalf("expected rule %s Hits == 0, got %d", r.ID, r.Hits)
+		}
+	}
+
+	// Missing session poll returns 404; missing sessionId param returns 400.
+	badPoll := doReq(t, srv, http.MethodGet, "/api/orgs/login/poll", nil)
+	if badPoll.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when sessionId missing, got %d", badPoll.Code)
+	}
+	missingPoll := doReq(t, srv, http.MethodGet, "/api/orgs/login/poll?sessionId=nonexistent", nil)
+	if missingPoll.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown sessionId, got %d", missingPoll.Code)
+	}
+
+	// Importing a nonexistent dir returns 400.
+	badImport := doReq(t, srv, http.MethodPost, "/api/orgs/import-dir", contract.ImportOrgStateDirRequest{
+		SourceDir: filepath.Join(dataDir, "missing-dir"),
+	})
+	if badImport.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing import-dir, got %d", badImport.Code)
+	}
+
+	// Register a test org via /api/orgs, verify it persists, then remove it via DELETE /api/orgs?id=...
+	snap = decodeSnapshot(t, doReq(t, srv, http.MethodPost, "/api/orgs", contract.AddOrgRequest{
+		Name:         "Prod Test Org",
+		Account:      "ops@prod.example",
+		NodeHostname: "prod-exit-01",
+		PublicIP:     "198.51.100.77",
+		Region:       "JP · Tokyo",
+	}))
+	if len(snap.Orgs) != 1 || len(snap.ExitNodes) != 1 {
+		t.Fatalf("expected 1 org and 1 exit node, got orgs=%d nodes=%d", len(snap.Orgs), len(snap.ExitNodes))
+	}
+	orgID := snap.Orgs[0].ID
+
+	snap = decodeSnapshot(t, doReq(t, srv, http.MethodDelete, "/api/orgs?id="+orgID, nil))
+	if len(snap.Orgs) != 0 || len(snap.ExitNodes) != 0 || snap.ActiveExitID != "" || snap.TunEnabled {
+		t.Fatalf("expected org and active exit cleared after DELETE /api/orgs, got orgs=%d nodes=%d active=%q tun=%v",
+			len(snap.Orgs), len(snap.ExitNodes), snap.ActiveExitID, snap.TunEnabled)
+	}
+
+	// Verify state.json reflects empty orgs after delete.
+	stateRaw, err := os.ReadFile(filepath.Join(dataDir, "state.json"))
+	if err != nil {
+		t.Fatalf("read state.json: %v", err)
+	}
+	if strings.Contains(string(stateRaw), orgID) {
+		t.Fatalf("removed org %s still present in state.json", orgID)
+	}
+}
+
+func TestDaemonSnapshotPeriodsAndPersistence(t *testing.T) {
+	dataDir := t.TempDir()
+	srv := newDemoServer(t, dataDir)
 
 	periods := []contract.TrafficPeriodKey{
 		contract.PeriodLive,
@@ -101,10 +194,7 @@ func TestDaemonSnapshotPeriodsAndPersistence(t *testing.T) {
 	}
 
 	// Re-open on same dataDir and verify persistence.
-	reopened, err := NewServer(dataDir, nil, false)
-	if err != nil {
-		t.Fatalf("reopen NewServer failed: %v", err)
-	}
+	reopened := newDemoServer(t, dataDir)
 	defer func() { _ = reopened.Close() }()
 
 	restored := decodeSnapshot(t, doReq(t, reopened, http.MethodGet, "/api/snapshot", nil))
@@ -120,10 +210,7 @@ func TestDaemonSnapshotPeriodsAndPersistence(t *testing.T) {
 }
 
 func TestDaemonExitSwitchRollbackPingAndBanner(t *testing.T) {
-	srv, err := NewServer(t.TempDir(), nil, false)
-	if err != nil {
-		t.Fatalf("NewServer failed: %v", err)
-	}
+	srv := newDemoServer(t, t.TempDir())
 	defer func() { _ = srv.Close() }()
 
 	// Switch to healthy Hong Kong node.
@@ -162,11 +249,7 @@ func TestDaemonExitSwitchRollbackPingAndBanner(t *testing.T) {
 }
 
 func TestDaemonRulesQuickRuleProvidersOrgsAndExport(t *testing.T) {
-	dataDir := t.TempDir()
-	srv, err := NewServer(dataDir, nil, false)
-	if err != nil {
-		t.Fatalf("NewServer failed: %v", err)
-	}
+	srv := newDemoServer(t, t.TempDir())
 	defer func() { _ = srv.Close() }()
 
 	initial := decodeSnapshot(t, doReq(t, srv, http.MethodGet, "/api/snapshot", nil))
@@ -307,9 +390,13 @@ func TestDaemonStaticSPAAndOriginProtection(t *testing.T) {
 		"assets/styles/app.css": {Data: []byte("body{color:#fff}")},
 	}
 
-	srv, err := NewServer(t.TempDir(), staticFS, false)
+	srv, err := NewServerWithOptions(Options{
+		DataDir:  t.TempDir(),
+		StaticFS: staticFS,
+		DemoMode: true,
+	})
 	if err != nil {
-		t.Fatalf("NewServer failed: %v", err)
+		t.Fatalf("NewServerWithOptions failed: %v", err)
 	}
 	defer func() { _ = srv.Close() }()
 
@@ -375,10 +462,7 @@ func TestDaemonStaticSPAAndOriginProtection(t *testing.T) {
 }
 
 func TestDaemonConcurrency(t *testing.T) {
-	srv, err := NewServer(t.TempDir(), nil, false)
-	if err != nil {
-		t.Fatalf("NewServer failed: %v", err)
-	}
+	srv := newDemoServer(t, t.TempDir())
 	defer func() { _ = srv.Close() }()
 
 	var wg sync.WaitGroup
