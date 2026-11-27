@@ -165,6 +165,7 @@ func (r *Runtime) ApplyRuntime(ctx context.Context, req RuntimeApplyRequest) err
 	if !req.TunEnabled || !hasOnlineExitNode(req.Orgs, req.Nodes) {
 		return r.stopLocked()
 	}
+	verifyStartupExit := !r.isRunningLocked() && req.Mode != contract.ModeDirect
 
 	finder := r.binFinder
 	if finder == nil {
@@ -253,9 +254,17 @@ func (r *Runtime) ApplyRuntime(ctx context.Context, req RuntimeApplyRequest) err
 	r.stderrBuf = stderrBuf
 
 	logPath := filepath.Join(dataDir, "sing-box.log")
-	if err := r.waitForClashReady(ctx, doneCh, stderrBuf, logPath); err != nil {
+	readyCtx, readyCancel := context.WithTimeout(ctx, clashReadyTimeout)
+	defer readyCancel()
+	if err := r.waitForClashReady(readyCtx, doneCh, stderrBuf, logPath); err != nil {
 		_ = r.stopLocked()
 		return err
+	}
+	if verifyStartupExit {
+		if err := waitForExitReady(readyCtx, buildClashBaseURL(r.ClashAPIAddr()), doneCh); err != nil {
+			_ = r.stopLocked()
+			return err
+		}
 	}
 	return nil
 }
@@ -275,8 +284,6 @@ func readLogFileTail(logPath string, maxLines int) string {
 }
 
 func (r *Runtime) waitForClashReady(ctx context.Context, doneCh <-chan struct{}, stderrBuf *tailBuffer, logPath string) error {
-	deadline := time.NewTimer(clashReadyTimeout)
-	defer deadline.Stop()
 	ticker := time.NewTicker(clashPollInterval)
 	defer ticker.Stop()
 
@@ -305,8 +312,9 @@ func (r *Runtime) waitForClashReady(ctx context.Context, doneCh <-chan struct{},
 			}
 			return fmt.Errorf("sing-box 启动后异常退出: %s", detail)
 		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
+			if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return ctx.Err()
+			}
 			detail := tailOutputLines(stderrBuf.String(), 6)
 			if detail == "" {
 				detail = readLogFileTail(logPath, 6)
@@ -315,9 +323,9 @@ func (r *Runtime) waitForClashReady(ctx context.Context, doneCh <-chan struct{},
 				if looksLikePrivilegeError(detail) {
 					return fmt.Errorf("启动虚拟网卡失败（需要管理员/系统服务权限）: %s", detail)
 				}
-				return fmt.Errorf("等待 sing-box 隧道握手超时: %s", detail)
+				return fmt.Errorf("等待 sing-box 启动超时: %s", detail)
 			}
-			return errors.New("等待 sing-box 隧道握手超时（35s）")
+			return errors.New("等待 sing-box 启动超时")
 		case <-ticker.C:
 		}
 	}

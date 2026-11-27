@@ -77,6 +77,7 @@ type Server struct {
 	lastDownloadTotal int64
 	lastUploadTotal   int64
 
+	tunMu  sync.Mutex
 	saveMu sync.Mutex
 
 	samplerSeq atomic.Int64
@@ -269,10 +270,15 @@ func (s *Server) applySingBoxRuntime(ctx context.Context) error {
 }
 
 func (s *Server) applySingBoxRuntimeWithExit(ctx context.Context, exitID string) error {
+	tunEnabled, _, _, _, _ := s.ctrl.State()
+	return s.applySingBoxRuntimeWithTun(ctx, exitID, tunEnabled)
+}
+
+func (s *Server) applySingBoxRuntimeWithTun(ctx context.Context, exitID string, tunEnabled bool) error {
 	if !s.shouldManageSingBox() || s.rt == nil {
 		return nil
 	}
-	tunEnabled, mode, _, _, _ := s.ctrl.State()
+	_, mode, _, _, _ := s.ctrl.State()
 	s.resetClashTotals()
 	return s.rt.ApplyRuntime(ctx, engine.RuntimeApplyRequest{
 		DataDir:      s.dataDir,
@@ -309,6 +315,8 @@ func (s *Server) handleSetTun(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.tunMu.Lock()
+	defer s.tunMu.Unlock()
 
 	if req.Enabled && s.shouldManageSingBox() {
 		if !hasAnyOnlineNode(s.tailnet.ListOrgs(), s.tailnet.ListExitNodes()) {
@@ -323,27 +331,24 @@ func (s *Server) handleSetTun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	tunBefore, _, _, _, _ := s.ctrl.State()
-	s.ctrl.SetTun(req.Enabled)
-
 	if s.shouldManageSingBox() {
+		_, _, activeExitID, _, _ := s.ctrl.State()
 		runCtx, cancel := context.WithTimeout(context.Background(), runtimeStartTimout)
-		err := s.applySingBoxRuntime(runCtx)
+		err := s.applySingBoxRuntimeWithTun(runCtx, activeExitID, req.Enabled)
 		cancel()
 		if err != nil {
-			s.ctrl.SetTun(tunBefore)
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		s.ctrl.SetTun(req.Enabled)
 		if !req.Enabled {
 			s.ctrl.SetConnections(nil)
 			s.resetClashTotals()
-		} else if s.getSettings().AutoVerifyIP {
-			_, _, activeExitID, _, _ := s.ctrl.State()
-			if activeExitID != "" {
-				go s.probeAndSavePublicIPAsync(activeExitID)
-			}
+		} else if s.getSettings().AutoVerifyIP && activeExitID != "" {
+			go s.probeAndSavePublicIPAsync(activeExitID)
 		}
+	} else {
+		s.ctrl.SetTun(req.Enabled)
 	}
 
 	if err := s.saveState(); err != nil {

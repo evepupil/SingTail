@@ -24,6 +24,8 @@ type defaultProber struct {
 	realHTTP bool
 }
 
+var publicIPProbeURLs = [...]string{"https://api.ipify.org", "https://ifconfig.me/ip"}
+
 // NewDefaultProber constructs an IPProber.
 // When realHTTP is true, it queries public IP echo services through proxyAddr;
 // when false, it simulates verification using the node health metadata.
@@ -76,10 +78,9 @@ func probeViaHTTP(ctx context.Context, proxyAddr string) (string, error) {
 	defer transport.CloseIdleConnections()
 
 	client := &http.Client{Transport: transport}
-	endpoints := []string{"https://api.ipify.org", "https://ifconfig.me/ip"}
 
 	var lastErr error
-	for _, endpoint := range endpoints {
+	for _, endpoint := range publicIPProbeURLs {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}

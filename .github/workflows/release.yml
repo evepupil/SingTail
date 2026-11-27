@@ -13,6 +13,9 @@ on:
       - main
   workflow_dispatch:
 
+env:
+  SING_BOX_VERSION: '1.14.5'
+
 jobs:
   ci:
     name: CI Gate (Go & Frontend)
@@ -121,7 +124,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item -Path README.md -Destination build/windows/dist/README.md -Force
 
-      - name: Download sing-box 1.14.3 and .srs rule packs
+      - name: Download sing-box and .srs rule packs
         shell: pwsh
         run: |
           $ProgressPreference = 'SilentlyContinue'
@@ -131,7 +134,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $binDir, $rulesDir, $tmpDir | Out-Null
 
           $sbZip = "$tmpDir/sing-box.zip"
-          Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v1.14.3/sing-box-1.14.3-windows-amd64.zip" -OutFile $sbZip
+          $coreVersion = $env:SING_BOX_VERSION
+          Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v$($coreVersion)/sing-box-$($coreVersion)-windows-amd64.zip" -OutFile $sbZip
           Expand-Archive -Path $sbZip -DestinationPath "$tmpDir/extracted" -Force
           $sbExe = Get-ChildItem -Path "$tmpDir/extracted" -Filter "sing-box.exe" -Recurse | Select-Object -First 1
           if (-not $sbExe) { throw "sing-box.exe not found in archive" }
@@ -239,7 +243,7 @@ jobs:
           curl -fsSL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-github.srs" -o "$RULES_DIR/geosite-github.srs"
           curl -fsSL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs" -o "$RULES_DIR/geosite-category-ads-all.srs"
 
-      - name: Build macOS binaries, bundle sing-box 1.14.3, and package DMGs
+      - name: Build macOS binaries, bundle sing-box, and package DMGs
         run: |
           RAW_REF="${{ github.ref_name }}"
           VERSION="${RAW_REF#v}"
@@ -257,7 +261,7 @@ jobs:
             CGO_ENABLED=1 CGO_LDFLAGS="-framework UniformTypeIdentifiers" GOOS=darwin GOARCH="$ARCH" go build -tags desktop,production -trimpath -ldflags="-s -w" -o "$DIST_DIR/singtail" ./cmd/singtail-desktop
 
             curl -fsSL --retry 3 --retry-delay 2 \
-              "https://github.com/SagerNet/sing-box/releases/download/v1.14.3/sing-box-1.14.3-darwin-${ARCH}.tar.gz" \
+              "https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-darwin-${ARCH}.tar.gz" \
               -o "$TMP_SB/sing-box.tar.gz"
             tar -xzf "$TMP_SB/sing-box.tar.gz" -C "$TMP_SB"
             SB_BIN="$(find "$TMP_SB" -type f -name 'sing-box' | head -n 1)"
