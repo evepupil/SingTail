@@ -9,9 +9,10 @@ import {
   toggleTheme,
   toggleTun,
   setRoutingMode,
+  setTrafficPeriod,
+  setBreakdownTab,
   switchExitNode,
   pingAllExitNodes,
-  toggleClashHandover,
   addCustomRule,
   importRulesFromText,
   toggleRuleEnabled,
@@ -45,7 +46,7 @@ const NAV_ITEMS = [
   },
   {
     id: "providers",
-    label: "规则集与订阅",
+    label: "规则集",
     countFn: (s) => s.providers.length,
     icon: `<svg class="rail-nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 3.5h11v9h-11z"/><path d="M2.5 6.5h11M6 6.5v6"/></svg>`
   },
@@ -57,7 +58,7 @@ const NAV_ITEMS = [
   },
   {
     id: "settings",
-    label: "组织与设置",
+    label: "设置",
     countFn: (s) => s.orgs.length,
     icon: `<svg class="rail-nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M12.4 3.6L11 5M5 11l-1.4 1.4"/></svg>`
   }
@@ -72,14 +73,14 @@ function renderSidebar() {
     <div class="rail-engine-box">
       <div class="engine-top-row">
         <div class="engine-status-label">
-          <span class="status-dot ${state.tunEnabled ? "is-on" : state.clashHandover ? "is-amber" : ""}"></span>
-          <span>${state.clashHandover ? "已让路 Clash" : state.tunEnabled ? "TUN 虚拟网卡" : "引擎已停用"}</span>
+          <span class="status-dot ${state.tunEnabled ? "is-on" : ""}"></span>
+          <span>${state.tunEnabled ? "TUN 已开启" : "已关闭"}</span>
         </div>
         <button
           type="button"
           class="sharp-switch"
           role="switch"
-          aria-label="TUN 总开关"
+          aria-label="总开关"
           aria-checked="${state.tunEnabled}"
           data-action="toggle-tun"
           data-testid="switch-master-tun"
@@ -88,7 +89,7 @@ function renderSidebar() {
         </button>
       </div>
 
-      <div class="mode-seg-group" role="group" aria-label="全局分流模式">
+      <div class="mode-seg-group" role="group" aria-label="分流模式">
         <button type="button" class="mode-seg-btn ${state.routingMode === "rule" ? "is-active" : ""}" data-set-mode="rule">规则</button>
         <button type="button" class="mode-seg-btn ${state.routingMode === "global" ? "is-active" : ""}" data-set-mode="global">全局</button>
         <button type="button" class="mode-seg-btn ${state.routingMode === "direct" ? "is-active" : ""}" data-set-mode="direct">直连</button>
@@ -96,16 +97,14 @@ function renderSidebar() {
 
       <div class="engine-exit-mini">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
-          <span class="eyebrow-mono" style="font-size:9.5px;">ACTIVE EXIT</span>
-          <span class="font-mono-ui" style="font-size:10.5px;color:var(--accent-text);">${activeExit.latencyMs} ms</span>
+          <span class="truncate" style="font-size:12.5px;font-weight:600;color:var(--text-primary);">${esc(activeExit.label)}</span>
+          <span class="font-mono-ui" style="font-size:10.5px;color:var(--accent-text);flex-shrink:0;">${activeExit.latencyMs} ms</span>
         </div>
-        <div class="truncate" style="font-size:12.5px;font-weight:600;color:var(--text-primary);">${esc(activeExit.label)}</div>
-        <div class="font-mono-ui truncate" style="font-size:11px;color:var(--text-muted);">${esc(activeExit.publicIp)} · ${esc(activeExit.orgName)}</div>
+        <div class="font-mono-ui truncate" style="font-size:11px;color:var(--text-muted);">${esc(activeExit.publicIp)}</div>
       </div>
     </div>
 
-    <nav class="rail-nav" aria-label="主功能导航">
-      <div class="rail-group-label">工作台 (WORKBENCH)</div>
+    <nav class="rail-nav" aria-label="主导航">
       ${NAV_ITEMS.map(
         (item) => `
         <button
@@ -123,37 +122,6 @@ function renderSidebar() {
       `
       ).join("")}
     </nav>
-
-    <div class="rail-footer">
-      <button type="button" class="btn-hairline" style="width:100%;justify-content:space-between;" data-action="toggle-clash" data-testid="btn-rail-clash">
-        <span>${state.clashHandover ? "⇄ 接管回 SingTail" : "⇄ 让路至 Clash Verge"}</span>
-        <span class="font-mono-ui" style="font-size:10.5px;color:var(--text-subtle);">互斥</span>
-      </button>
-    </div>
-  `;
-}
-
-function renderStatusBar() {
-  const bar = document.getElementById("window-statusbar");
-  if (!bar) return;
-  const totalProviderRules = state.providers.reduce((acc, p) => acc + p.entryCount, 0);
-
-  bar.innerHTML = `
-    <div class="statusbar-seg">
-      <span class="status-kv">
-        <span class="status-dot ${state.tunEnabled ? "is-green" : ""}"></span>
-        <span>网卡 singbox (MTU ${state.settings.mtu})</span>
-      </span>
-      <span class="status-divider"></span>
-      <span class="status-kv">混合端口 127.0.0.1:${state.settings.localMixedPort}</span>
-      <span class="status-divider"></span>
-      <span class="status-kv">DNS 223.5.5.5 / 1.1.1.1 DoH</span>
-    </div>
-    <div class="statusbar-seg">
-      <span class="status-kv">规则库 ${totalProviderRules.toLocaleString()} 条</span>
-      <span class="status-divider"></span>
-      <span class="status-kv">后台内存 26.8 MB</span>
-    </div>
   `;
 }
 
@@ -172,7 +140,6 @@ function renderWorkspace() {
   const main = document.getElementById("workspace-main");
   if (!main) return;
 
-  // Preserve focused input & caret across reactive renders
   const activeEl = document.activeElement;
   const focusedId = activeEl && activeEl.id ? activeEl.id : null;
   const selStart = activeEl && typeof activeEl.selectionStart === "number" ? activeEl.selectionStart : null;
@@ -249,13 +216,11 @@ function renderAll() {
   renderTitlebarControls();
   renderSidebar();
   renderWorkspace();
-  renderStatusBar();
   renderOverlays();
 }
 
 subscribe(renderAll);
 
-// Global Click Delegation
 document.addEventListener("click", (e) => {
   const target = e.target.closest("button, [data-select-conn]");
   if (!target) {
@@ -276,6 +241,16 @@ document.addEventListener("click", (e) => {
 
   if (target.dataset.setMode) {
     setRoutingMode(target.dataset.setMode);
+    return;
+  }
+
+  if (target.dataset.trafficPeriod) {
+    setTrafficPeriod(target.dataset.trafficPeriod);
+    return;
+  }
+
+  if (target.dataset.breakdownTab) {
+    setBreakdownTab(target.dataset.breakdownTab);
     return;
   }
 
@@ -336,12 +311,7 @@ document.addEventListener("click", (e) => {
 
   if (target.dataset.pickAppRule) {
     const [proc, action] = target.dataset.pickAppRule.split(":");
-    addCustomRule({
-      type: "PROCESS-NAME",
-      payload: proc,
-      action,
-      note: "点选运行中程序添加"
-    });
+    addCustomRule({ type: "PROCESS-NAME", payload: proc, action });
     state.activeModal = null;
     notify();
     return;
@@ -362,7 +332,6 @@ document.addEventListener("click", (e) => {
   if (target.dataset.settingToggle) {
     const key = target.dataset.settingToggle;
     state.settings[key] = !state.settings[key];
-    pushToast("系统设置已立即保存生效");
     notify();
     return;
   }
@@ -375,8 +344,6 @@ document.addEventListener("click", (e) => {
     else if (kind === "modal") {
       state.activeModal = val;
       notify();
-    } else if (kind === "action" && val === "clash") {
-      toggleClashHandover();
     }
     return;
   }
@@ -392,10 +359,6 @@ document.addEventListener("click", (e) => {
       state.trayOpen = !state.trayOpen;
       notify();
       break;
-    case "close-tray":
-      state.trayOpen = false;
-      notify();
-      break;
     case "open-cmdk":
       state.cmdkOpen = true;
       state.cmdkQuery = "";
@@ -407,9 +370,6 @@ document.addEventListener("click", (e) => {
       break;
     case "ping-nodes":
       pingAllExitNodes();
-      break;
-    case "toggle-clash":
-      toggleClashHandover();
       break;
     case "dismiss-banner":
       state.bannerNotice = null;
@@ -433,16 +393,15 @@ document.addEventListener("click", (e) => {
       refreshAllProviders();
       break;
     case "sync-org":
-      pushToast("已同步组织内最新出口节点状态");
+      pushToast("已同步");
       break;
     case "copy-export-json":
-      pushToast("脱敏配置 JSON 已复制到剪贴板");
+      pushToast("已复制");
       state.activeModal = null;
       notify();
       break;
     case "win-minimize":
-      state.trayOpen = true;
-      pushToast("窗口最小化时驻留至右下角系统托盘");
+      state.trayOpen = !state.trayOpen;
       notify();
       break;
     default:
@@ -450,7 +409,6 @@ document.addEventListener("click", (e) => {
   }
 });
 
-// Input & File Change Delegation
 document.addEventListener("input", (e) => {
   const el = e.target;
   if (el.id === "rule-search-input") {
@@ -473,11 +431,9 @@ document.addEventListener("change", async (e) => {
     const text = await el.files[0].text();
     const area = document.getElementById("import-rules-textarea");
     if (area) area.value = text;
-    pushToast(`已读取文件：${el.files[0].name}`);
   }
 });
 
-// Modal Form Submissions
 document.addEventListener("submit", (e) => {
   e.preventDefault();
   const form = e.target;
@@ -487,8 +443,7 @@ document.addEventListener("submit", (e) => {
     const ok = addCustomRule({
       type: String(fd.get("type") || "DOMAIN-SUFFIX"),
       payload: String(fd.get("payload") || ""),
-      action: String(fd.get("action") || "EXIT"),
-      note: String(fd.get("note") || "")
+      action: String(fd.get("action") || "EXIT")
     });
     if (ok) {
       state.activeModal = null;
@@ -526,7 +481,6 @@ document.addEventListener("submit", (e) => {
   }
 });
 
-// Keyboard Shortcuts (Ctrl+K / Esc)
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
     e.preventDefault();
@@ -549,7 +503,6 @@ window.addEventListener("resize", () => {
   }
 });
 
-// Non-intrusive 1.2s telemetry updater (never steals input focus)
 setInterval(() => {
   if (!state.tunEnabled) {
     state.downHistory.push(0);
@@ -572,10 +525,9 @@ setInterval(() => {
   const uNow = state.upHistory[state.upHistory.length - 1];
   if (downEl) downEl.textContent = `↓ ${dNow.toFixed(1)}`;
   if (upEl) upEl.textContent = `↑ ${uNow.toFixed(1)} MB/s`;
-  if (state.activeView === "overview") {
+  if (state.activeView === "overview" && state.trafficPeriod === "live") {
     drawSparklineCanvas(state);
   }
 }, 1200);
 
-// Initial mount
 renderAll();

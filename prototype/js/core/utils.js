@@ -8,16 +8,16 @@ export function esc(str) {
     .replace(/"/g, "&quot;");
 }
 
-export function renderActionBadge(action, exitLabel = "默认出口") {
+export function renderActionBadge(action, exitLabel = "出口") {
   switch (action) {
     case "EXIT":
       return `<span class="tag-sharp tag-lime-outline">↗ ${esc(exitLabel)}</span>`;
     case "DIRECT":
-      return `<span class="tag-sharp tag-green">→ 直连宽带</span>`;
+      return `<span class="tag-sharp tag-green">→ 直连</span>`;
     case "FALLBACK_PROXY":
-      return `<span class="tag-sharp tag-cyan">⇄ 兜底代理</span>`;
+      return `<span class="tag-sharp tag-cyan">⇄ 本地代理</span>`;
     case "REJECT":
-      return `<span class="tag-sharp tag-red">✕ 拦截阻断</span>`;
+      return `<span class="tag-sharp tag-red">✕ 拦截</span>`;
     default:
       return `<span class="tag-sharp">${esc(action)}</span>`;
   }

@@ -2,6 +2,7 @@
 import {
   INITIAL_ORGS,
   INITIAL_EXIT_NODES,
+  TRAFFIC_PERIODS,
   INITIAL_RULES,
   INITIAL_PROVIDERS,
   INITIAL_CONNECTIONS,
@@ -14,12 +15,16 @@ export const state = {
   theme: "dark",
   activeView: "overview", // overview | rules | providers | connections | settings
   tunEnabled: true,
-  clashHandover: false,
   routingMode: "rule", // rule | global | direct
   selectedOrgFilter: "all",
   activeExitId: "ts-us-macmini",
   verifyingExitId: null,
-  bannerNotice: null, // { kind: 'rollback' | 'verifying' | 'clash', text: string }
+  bannerNotice: null,
+
+  // Traffic analytics granularity & breakdown tab
+  trafficPeriod: "live", // live | day | week | month30 | monthly
+  breakdownTab: "node", // node | org
+  trafficPeriods: structuredClone(TRAFFIC_PERIODS),
 
   orgs: structuredClone(INITIAL_ORGS),
   exitNodes: structuredClone(INITIAL_EXIT_NODES),
@@ -28,15 +33,13 @@ export const state = {
   connections: structuredClone(INITIAL_CONNECTIONS),
   runningApps: structuredClone(RUNNING_APPS),
 
-  // Filters & UI selections
   ruleFilterAction: "ALL",
   ruleSearch: "",
   connFilterAction: "ALL",
   connSearch: "",
   connPaused: false,
-  selectedConnId: "c-101",
+  selectedConnId: "c-106",
 
-  // Telemetry sparkline history (36 points, MB/s)
   downHistory: [
     1.8, 2.4, 3.1, 2.9, 4.6, 6.2, 5.4, 4.1, 3.3, 5.8, 7.9, 8.4,
     6.7, 5.2, 4.8, 6.1, 9.2, 11.4, 10.1, 7.6, 6.3, 5.9, 7.2, 8.8,
@@ -48,27 +51,18 @@ export const state = {
     1.2, 0.9, 0.8, 1.1, 1.3, 1.5, 1.3, 1.1, 1.0, 1.2, 1.4, 1.3
   ],
 
-  // System & Fallback settings
   settings: {
     autoStartService: true,
     autoVerifyIp: true,
-    mtu: 1280,
-    ipv4Only: true,
-    bypassTailnetCidr: "100.64.0.0/10",
-    localMixedPort: 7899,
-    cnDns: "223.5.5.5",
-    exitDoh: "https://1.1.1.1/dns-query",
     fallbackProxyEnabled: true,
     fallbackProxyAddr: "127.0.0.1:7897",
-    clashExePath: "C:\\Program Files\\Clash Verge\\clash-verge.exe",
     autoUpdateRulesDays: 14
   },
 
-  // Floating overlays
   trayOpen: false,
   cmdkOpen: false,
   cmdkQuery: "",
-  activeModal: null // null | 'add-rule' | 'pick-app' | 'import-rules' | 'add-org' | 'add-provider' | 'export-config'
+  activeModal: null
 };
 
 export function subscribe(fn) {
@@ -91,7 +85,7 @@ export function pushToast(message, isError = false) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     item.remove();
-  }, 3000);
+  }, 2800);
 }
 
 export function getActiveExit() {
@@ -111,40 +105,37 @@ export function toggleTheme() {
 }
 
 export function toggleTun() {
-  if (state.clashHandover) {
-    state.clashHandover = false;
-    state.tunEnabled = true;
-    state.bannerNotice = null;
-    pushToast("已退出外部代理让路，SingTail 虚拟网卡重新接管");
-    notify();
-    return;
-  }
   state.tunEnabled = !state.tunEnabled;
-  pushToast(state.tunEnabled ? "虚拟网卡 singbox 已挂载" : "虚拟网卡已卸载，恢复系统普通直连");
+  pushToast(state.tunEnabled ? "TUN 已开启" : "TUN 已关闭");
   notify();
 }
 
 export function setRoutingMode(mode) {
   state.routingMode = mode;
-  const labelMap = { rule: "规则分流", global: "全局出口", direct: "全部直连" };
-  pushToast(`分流模式已切为：${labelMap[mode]}`);
+  notify();
+}
+
+export function setTrafficPeriod(period) {
+  if (!state.trafficPeriods[period]) return;
+  state.trafficPeriod = period;
+  notify();
+}
+
+export function setBreakdownTab(tab) {
+  state.breakdownTab = tab;
   notify();
 }
 
 export function switchExitNode(targetId) {
   if (state.verifyingExitId) return;
   const target = state.exitNodes.find((n) => n.id === targetId);
-  if (!target) return;
-  if (target.id === state.activeExitId) {
-    pushToast(`当前已在出口：${target.label}`);
-    return;
-  }
+  if (!target || target.id === state.activeExitId) return;
 
   const previous = getActiveExit();
   state.verifyingExitId = target.id;
   state.bannerNotice = {
     kind: "verifying",
-    text: `正在切换至 ${target.hostname} (${target.tailscaleIp}) 并实测核验出口公网 IP…`
+    text: `正在切换至 ${target.label} 并核验出口 IP…`
   };
   notify();
 
@@ -153,13 +144,13 @@ export function switchExitNode(targetId) {
     if (!target.healthy) {
       state.bannerNotice = {
         kind: "rollback",
-        text: `出口 ${target.hostname} 公网连通核验超时，已自动回滚至 ${previous.label} (${previous.publicIp})`
+        text: `${target.label} 连通核验超时，已回滚至 ${previous.label} (${previous.publicIp})`
       };
-      pushToast(`核验失败，已安全回滚至 ${previous.hostname}`, true);
+      pushToast(`核验超时，已回滚至 ${previous.label}`, true);
     } else {
       state.activeExitId = target.id;
       state.bannerNotice = null;
-      pushToast(`已切换至 ${target.label} · 实测公网 IP ${target.publicIp}`);
+      pushToast(`已切换至 ${target.label} (${target.publicIp})`);
     }
     notify();
   }, 420);
@@ -171,46 +162,26 @@ export function pingAllExitNodes() {
       node.latencyMs = 299;
       continue;
     }
-    const delta = Math.round((Math.random() - 0.5) * 12);
+    const delta = Math.round((Math.random() - 0.5) * 10);
     node.latencyMs = Math.max(18, node.latencyMs + delta);
   }
-  pushToast("已完成全部组织出口节点延迟探测");
+  pushToast("延迟已刷新");
   notify();
 }
 
-export function toggleClashHandover() {
-  state.clashHandover = !state.clashHandover;
-  if (state.clashHandover) {
-    state.tunEnabled = false;
-    state.bannerNotice = {
-      kind: "clash",
-      text: "已安全卸载 SingTail 虚拟网卡并拉起 Clash Verge；点击右侧「接管回 SingTail」可随时切回。"
-    };
-    pushToast("已让路并拉起 Clash Verge");
-  } else {
-    state.tunEnabled = true;
-    state.bannerNotice = null;
-    pushToast("已优雅关闭 Clash Verge 并恢复 SingTail 接管");
-  }
-  notify();
-}
-
-export function addCustomRule({ type, payload, action, note }) {
+export function addCustomRule({ type, payload, action }) {
   const cleanPayload = payload.trim();
   if (!cleanPayload) return false;
-  const newRule = {
+  state.rules.splice(2, 0, {
     id: `r-${Date.now()}`,
     type,
     payload: cleanPayload,
     action,
-    note: note.trim() || "用户自定义规则",
     hits: 0,
     enabled: true,
     locked: false
-  };
-  // Insert right after locked head rules (index 2) so custom rules take top priority
-  state.rules.splice(2, 0, newRule);
-  pushToast(`已添加高优先级规则：${type} · ${cleanPayload}`);
+  });
+  pushToast(`已添加规则：${cleanPayload}`);
   notify();
   return true;
 }
@@ -221,7 +192,6 @@ export function importRulesFromText(rawText) {
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("#") && !l.startsWith("//"));
 
-  let added = 0;
   const parsed = [];
   for (const line of lines) {
     const parts = line.split(",").map((s) => s.trim());
@@ -238,27 +208,25 @@ export function importRulesFromText(rawText) {
         : "DIRECT";
       if (payload) {
         parsed.push({
-          id: `r-imp-${Date.now()}-${added}`,
+          id: `r-imp-${Date.now()}-${parsed.length}`,
           type,
           payload,
           action,
-          note: "规则文件导入",
           hits: 0,
           enabled: true,
           locked: false
         });
-        added += 1;
       }
     }
   }
-  if (added > 0) {
+  if (parsed.length > 0) {
     state.rules.splice(2, 0, ...parsed);
-    pushToast(`校验通过，成功导入 ${added} 条分流规则`);
+    pushToast(`已导入 ${parsed.length} 条规则`);
     notify();
   } else {
-    pushToast("未识别到有效规则行，请检查格式", true);
+    pushToast("未识别到有效规则", true);
   }
-  return added;
+  return parsed.length;
 }
 
 export function toggleRuleEnabled(ruleId) {
@@ -281,8 +249,7 @@ export function moveRule(ruleId, direction) {
 export function deleteRule(ruleId) {
   const idx = state.rules.findIndex((r) => r.id === ruleId);
   if (idx < 0 || state.rules[idx].locked) return;
-  const [removed] = state.rules.splice(idx, 1);
-  pushToast(`已移除规则：${removed.payload}`);
+  state.rules.splice(idx, 1);
   notify();
 }
 
@@ -292,25 +259,19 @@ export function quickRouteFromConnection(connId, matchKind, action) {
   const isProcess = matchKind === "process";
   const type = isProcess ? "PROCESS-NAME" : "DOMAIN-SUFFIX";
   const payload = isProcess ? conn.process : conn.host.split(".").slice(-2).join(".");
-  addCustomRule({
-    type,
-    payload,
-    action,
-    note: "从实时连接检视器快捷创建"
-  });
+  addCustomRule({ type, payload, action });
   conn.routeAction = action;
-  conn.matchedRule = `${type} · ${payload}`;
+  conn.matchedRule = payload;
   notify();
 }
 
 export function refreshAllProviders() {
   const now = new Date();
-  const stamp = `2026-11-27 ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  const stamp = `11-27 ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
   for (const p of state.providers) {
     p.updatedAt = stamp;
-    p.verified = true;
   }
-  pushToast(`已更新并反编译校验全部 ${state.providers.length} 个规则集`);
+  pushToast("规则集已全部更新");
   notify();
 }
 
@@ -319,70 +280,49 @@ export function addProvider({ tag, sourceName, url }) {
   state.providers.unshift({
     id: `p-${Date.now()}`,
     tag: tag.trim(),
-    format: "SRS Binary",
-    sourceName: sourceName.trim() || "自定义远程订阅",
+    sourceName: sourceName.trim() || "Custom",
     url: url.trim(),
     entryCount: 412,
-    updatedAt: "刚刚",
-    badge: "订阅规则集",
-    verified: true
+    updatedAt: "刚刚"
   });
-  pushToast(`已添加规则订阅：${tag.trim()}`);
+  pushToast(`已添加订阅：${tag.trim()}`);
   notify();
   return true;
 }
 
 export function addOrganization({ name, account, nodeHostname, publicIp, region }) {
   const orgId = `org-${Date.now()}`;
-  const cleanName = name.trim() || "New Team Tailnet";
+  const cleanName = name.trim() || "New Tailnet";
   state.orgs.push({
     id: orgId,
     name: cleanName,
     account: account.trim() || "admin@team.org",
-    tailnetDomain: `${cleanName.toLowerCase().replace(/[^a-z0-9]/g, "")}.ts.net`,
-    localNodeName: `singtail-${cleanName.toLowerCase().slice(0, 6)}-win`,
     localTailscaleIp: "100.108.64.19",
     stateDir: `data/ts-state-${orgId}`,
-    authStatus: "authenticated",
     lastSync: "刚刚"
   });
 
+  const newNodeId = `ts-${Date.now()}`;
   state.exitNodes.unshift({
-    id: `ts-${Date.now()}`,
+    id: newNodeId,
     orgId,
     orgName: cleanName,
     hostname: nodeHostname.trim() || "eu-fra-exit-01",
-    label: `${region.trim() || "法兰克福"} 团队出口`,
+    label: `${region.trim() || "法兰克福"} 出口`,
     tailscaleIp: "100.108.12.1",
     publicIp: publicIp.trim() || "88.198.44.102",
     region: region.trim() || "DE · Frankfurt",
-    ispType: "Hetzner",
-    relayMode: "P2P 直连",
+    relayMode: "直连",
     latencyMs: 164,
     online: true,
     healthy: true
   });
 
-  pushToast(`已完成独立端口授权并挂载组织：${cleanName}`);
+  for (const p of Object.values(state.trafficPeriods)) {
+    p.nodeUsageGB[newNodeId] = 0;
+  }
+
+  pushToast(`已挂载组织：${cleanName}`);
   notify();
   return true;
-}
-
-export function tickTelemetry() {
-  if (!state.tunEnabled) {
-    state.downHistory.push(0);
-    state.downHistory.shift();
-    state.upHistory.push(0);
-    state.upHistory.shift();
-    notify();
-    return;
-  }
-  const lastDown = state.downHistory[state.downHistory.length - 1] || 5.0;
-  const nextDown = Math.max(0.8, Math.min(14.5, +(lastDown + (Math.random() - 0.48) * 2.4).toFixed(1)));
-  const nextUp = Math.max(0.2, Math.min(3.8, +(nextDown * 0.17 + Math.random() * 0.4).toFixed(1)));
-  state.downHistory.push(nextDown);
-  state.downHistory.shift();
-  state.upHistory.push(nextUp);
-  state.upHistory.shift();
-  notify();
 }

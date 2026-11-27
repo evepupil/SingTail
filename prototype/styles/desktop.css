@@ -2,7 +2,7 @@
 
 .desktop-window {
   display: grid;
-  grid-template-rows: var(--titlebar-h) minmax(0, 1fr) var(--statusbar-h);
+  grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
   width: 100vw;
   height: 100dvh;
   background: var(--bg-canvas);
@@ -637,15 +637,15 @@ button:disabled {
 /* Architectural Flush Hairline Grids (1px gap on border background) */
 .bento-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   background: var(--border-hairline);
   gap: 1px;
   border-bottom: 1px solid var(--border-hairline);
 }
 
-@media (max-width: 980px) {
+@media (max-width: 860px) {
   .bento-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -834,25 +834,50 @@ button:disabled {
   font-size: 10.5px;
 }
 
-/* Sparkline Monitor Box */
-.sparkline-panel {
+/* Analytics Split: Left Multi-Granularity Trend + Right Org/Node Traffic Distribution */
+.analytics-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 1fr);
+  gap: 1px;
+  background: var(--border-hairline);
   border-bottom: 1px solid var(--border-hairline);
-  background: var(--bg-code);
-  padding: 12px 18px 14px;
 }
 
-.sparkline-head {
+@media (max-width: 1040px) {
+  .analytics-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.analytics-pane {
+  background: var(--bg-code);
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.analytics-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.traffic-totals-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .sparkline-canvas-wrap {
   position: relative;
   width: 100%;
-  height: 88px;
+  height: 158px;
   border: 1px solid var(--border-hairline);
   background: var(--bg-canvas);
 }
@@ -861,6 +886,56 @@ button:disabled {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* Stacked Org Bar & Ranked Node Usage Rows */
+.org-stacked-bar {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  background: var(--gray-100);
+  border: 1px solid var(--border-hairline);
+  overflow: hidden;
+}
+
+.org-legend-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.dist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.dist-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dist-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.dist-bar-track {
+  width: 100%;
+  height: 4px;
+  background: var(--gray-100);
+}
+
+.dist-bar-fill {
+  height: 100%;
+  background: var(--accent-fill);
 }
 
 /* High-Density Desktop Data Table */
@@ -1112,10 +1187,10 @@ button:disabled {
 /* Windows System Tray Popover Simulation (Bottom-Right or Top-Right Preview) */
 .tray-flyout {
   position: fixed;
-  right: 16px;
-  bottom: 38px;
+  right: 14px;
+  bottom: 14px;
   z-index: 75;
-  width: 312px;
+  width: 304px;
   background: var(--bg-surface);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sharp);
