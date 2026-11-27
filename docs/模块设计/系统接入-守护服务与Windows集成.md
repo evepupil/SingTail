@@ -3,7 +3,7 @@
 > - **所属里程碑**：[M2](../roadmap.md#m2核心业务层多组织与内核编排-系统接入层) · [M5](../roadmap.md#2-里程碑总览)
 > - **上游架构**：[架构设计.md](../架构设计.md#2-架构分层表)
 > - **当前状态**：已完成
-> - **最近更新**：2026-11-27
+> - **最近更新**：2026-11-28
 
 # 模块设计：守护服务网关与 Windows 系统集成
 
@@ -31,6 +31,7 @@
 - `internal/daemon/server.go`：默认零模拟数据生产模式启动，提供组织授权、凭据导入、组织移除和浏览器唤起等控制接口，兼容本机桌面窗口。开启虚拟网卡时，先等内核启动和出口检查完成，再更新开关和保存状态；失败时返回原因，开关保持关闭。设置里的自动验 IP 仍单独负责异步更新节点公网 IP。
 - `internal/syswin/`：Windows 下通过纯 Go（`CGO_ENABLED=0`）实现进程枚举、Windows 服务注册管理，以及带专属黄绿 `ST` 像素图标与动态实时右键菜单（开关 TUN、切换分流模式、秒切出口节点）的原生任务栏系统托盘；macOS 下通过 `process_darwin.go` 与 `service_darwin.go` 实现进程枚举与 `LaunchDaemon` 提权服务安装。
 - `cmd/singtail-service/main.go`：支持跨平台默认数据目录解析、`-listen`、`-data-dir`、`-web-dir`、`-install`、`-uninstall` 及后台服务宿主模式。
+- 桌面端在后台服务未运行时可在自身进程内托管网络。这个模式下，启动内核或检查配置也不会弹出命令行窗口。
 - `internal/daemon/server_test.go` & `internal/syswin/syswin_test.go`：全量单测与竞态测试全部通过。
 
 ## 5. 验证方式
@@ -54,3 +55,4 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/singtail-service
 |---|---|
 | 2026-11-27 | 初版模块设计定稿 |
 | 2026-11-27 | 开关在出口检查完成后才确认开启，失败时保留关闭状态。 |
+| 2026-11-28 | 桌面直接托管网络时同样静默启动内核。 |

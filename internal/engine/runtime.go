@@ -213,7 +213,7 @@ func (r *Runtime) ApplyRuntime(ctx context.Context, req RuntimeApplyRequest) err
 	}
 
 	checkCtx, checkCancel := context.WithTimeout(ctx, singBoxCheckTimout)
-	checkCmd := exec.CommandContext(checkCtx, binPath, "check", "-D", dataDir, "-c", cfgPath)
+	checkCmd := newCoreCommand(checkCtx, binPath, "check", "-D", dataDir, "-c", cfgPath)
 	checkOut, checkErr := checkCmd.CombinedOutput()
 	checkCancel()
 	if checkErr != nil {
@@ -229,7 +229,7 @@ func (r *Runtime) ApplyRuntime(ctx context.Context, req RuntimeApplyRequest) err
 	}
 
 	stderrBuf := newTailBuffer(maxStderrBuffer)
-	runCmd := exec.Command(binPath, "run", "-D", dataDir, "-c", cfgPath)
+	runCmd := newCoreCommand(context.Background(), binPath, "run", "-D", dataDir, "-c", cfgPath)
 	runCmd.Stdout = stderrBuf
 	runCmd.Stderr = stderrBuf
 
@@ -438,7 +438,7 @@ func CoreStatus() (available bool, version string, binPath string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, binPath, "version").CombinedOutput()
+	out, err := newCoreCommand(ctx, binPath, "version").CombinedOutput()
 	if err != nil {
 		return true, "", binPath
 	}
