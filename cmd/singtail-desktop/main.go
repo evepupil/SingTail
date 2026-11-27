@@ -309,7 +309,7 @@ func postJSONViaAPI(endpoint string, body any) error {
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := &http.Client{Timeout: 45 * time.Second}
 	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return err

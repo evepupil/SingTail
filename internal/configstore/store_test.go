@@ -27,7 +27,7 @@ func TestLoadOrDefaultWhenMissing(t *testing.T) {
 	if got.RoutingMode != contract.ModeRule {
 		t.Fatalf("expected default RoutingMode=%q, got %q", contract.ModeRule, got.RoutingMode)
 	}
-	if !got.Settings.FallbackProxyEnabled || got.Settings.FallbackProxyAddr != "127.0.0.1:7897" {
+	if got.Settings.FallbackProxyEnabled || got.Settings.FallbackProxyAddr != "127.0.0.1:7897" {
 		t.Fatalf("unexpected fallback defaults: %+v", got.Settings)
 	}
 	if !got.Settings.AutoStartService || !got.Settings.AutoVerifyIP || got.Settings.AutoUpdateRulesDays != 14 {

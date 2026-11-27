@@ -49,7 +49,7 @@ func defaultState() PersistedState {
 		Settings: contract.SystemSettings{
 			AutoStartService:     true,
 			AutoVerifyIP:         true,
-			FallbackProxyEnabled: true,
+			FallbackProxyEnabled: false,
 			FallbackProxyAddr:    "127.0.0.1:7897",
 			AutoUpdateRulesDays:  14,
 		},

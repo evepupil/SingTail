@@ -119,7 +119,7 @@ func (c *Coordinator) ImportStateDir(ctx context.Context, req contract.ImportOrg
 	importCtx, cancel := context.WithTimeout(nonNilContext(ctx), importStateTimeout)
 	defer cancel()
 
-	st, org, nodes, err := readRunningStatusAndProbe(importCtx, destDir, "", sanitizeHostname("singtail-"+orgID), req.Alias, orgID, errNotAuthenticated)
+	st, org, nodes, err := readRunningStatusAndProbe(importCtx, destDir, "", "", req.Alias, orgID, errNotAuthenticated)
 	if err != nil {
 		_ = os.RemoveAll(destDir)
 		return contract.Organization{}, nil, err
@@ -177,7 +177,8 @@ func (c *Coordinator) RefreshOrgFromTsnet(ctx context.Context, orgID string) ([]
 	refreshCtx, cancel := context.WithTimeout(nonNilContext(ctx), refreshTsnetTimeout)
 	defer cancel()
 
-	_, refreshedOrg, newNodes, err := readRunningStatusAndProbe(refreshCtx, stateDir, org.ControlURL, sanitizeHostname("singtail-"+org.ID), org.Name, org.ID, errNotAuthenticated)
+	preferredHost := strings.TrimSpace(org.NodeHostname)
+	_, refreshedOrg, newNodes, err := readRunningStatusAndProbe(refreshCtx, stateDir, org.ControlURL, preferredHost, org.Name, org.ID, errNotAuthenticated)
 	if err != nil {
 		return nil, err
 	}
@@ -231,6 +232,9 @@ func (c *Coordinator) RefreshOrgFromTsnet(ctx context.Context, orgID string) ([]
 	}
 	if refreshedOrg.LocalTailscaleIP != "" {
 		c.orgs[orgIdx].LocalTailscaleIP = refreshedOrg.LocalTailscaleIP
+	}
+	if refreshedOrg.NodeHostname != "" {
+		c.orgs[orgIdx].NodeHostname = refreshedOrg.NodeHostname
 	}
 	c.nodes = append(keptOtherNodes, newNodes...)
 
@@ -569,11 +573,20 @@ func extractOrgAndNodesFromStatus(orgID, stateDir, alias, controlURL string, st 
 		}
 	}
 
+	var nodeHostname string
+	if st != nil && st.Self != nil {
+		nodeHostname = strings.TrimSpace(st.Self.HostName)
+	}
+	if nodeHostname == "" {
+		nodeHostname = sanitizeHostname("singtail-" + orgID)
+	}
+
 	org := contract.Organization{
 		ID:               orgID,
 		Name:             orgName,
 		Account:          account,
 		LocalTailscaleIP: localIP,
+		NodeHostname:     nodeHostname,
 		ControlURL:       strings.TrimSpace(controlURL),
 		StateDir:         filepath.ToSlash(stateDir),
 		LastSync:         "刚刚",

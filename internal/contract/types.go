@@ -45,6 +45,7 @@ type Organization struct {
 	Name             string `json:"name"`
 	Account          string `json:"account"`
 	LocalTailscaleIP string `json:"localTailscaleIp"`
+	NodeHostname     string `json:"nodeHostname,omitempty"`
 	ControlURL       string `json:"controlUrl,omitempty"`
 	StateDir         string `json:"stateDir,omitempty"`
 	LastSync         string `json:"lastSync"`

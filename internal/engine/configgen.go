@@ -20,15 +20,18 @@ const (
 	fallbackProxyTag    = "fallback-proxy"
 	dnsCNTag            = "dns-cn"
 	dnsProxyTag         = "dns-proxy"
-	defaultMixedPort    = 7899
+	DefaultMixedPort    = 17899
+	DefaultMixedProxy   = "127.0.0.1:17899"
+	defaultTunInterface = "singtail"
 	defaultTunMTU       = 1280
-	defaultTunCIDR      = "172.19.0.1/30"
+	defaultTunCIDR      = "172.19.0.5/30"
 	tailscaleCGNATCIDR  = "100.64.0.0/10"
 	DefaultClashAPIAddr = "127.0.0.1:19090"
 )
 
 // ConfigOptions controls platform-specific and runtime paths for sing-box config generation.
 type ConfigOptions struct {
+	DataDir      string
 	RulesDir     string
 	ClashAPIAddr string
 	TargetGOOS   string
@@ -45,15 +48,24 @@ type singBoxConfig struct {
 }
 
 type singBoxExperimental struct {
-	ClashAPI *singBoxClashAPI `json:"clash_api,omitempty"`
+	CacheFile *singBoxCacheFile `json:"cache_file,omitempty"`
+	ClashAPI  *singBoxClashAPI  `json:"clash_api,omitempty"`
+}
+
+type singBoxCacheFile struct {
+	Enabled  bool   `json:"enabled"`
+	Path     string `json:"path"`
+	StoreDNS bool   `json:"store_dns"`
 }
 
 type singBoxClashAPI struct {
 	ExternalController string `json:"external_controller"`
+	DefaultMode        string `json:"default_mode,omitempty"`
 }
 
 type singBoxLog struct {
 	Level     string `json:"level"`
+	Output    string `json:"output,omitempty"`
 	Timestamp bool   `json:"timestamp"`
 }
 
@@ -68,6 +80,7 @@ type singBoxRoute struct {
 	Rules                 []map[string]any `json:"rules"`
 	RuleSet               []map[string]any `json:"rule_set,omitempty"`
 	Final                 string           `json:"final"`
+	FindProcess           bool             `json:"find_process"`
 	AutoDetectInterface   bool             `json:"auto_detect_interface"`
 	DefaultDomainResolver string           `json:"default_domain_resolver,omitempty"`
 }
@@ -115,6 +128,7 @@ func GenerateSingBoxConfigWithOptions(
 	if clashAddr == "" {
 		clashAddr = DefaultClashAPIAddr
 	}
+	dataDir := strings.TrimSpace(opts.DataDir)
 
 	endpoints, epTags, activeOrgID := buildOrgEndpoints(orgs, nodes, activeExitID)
 
@@ -135,10 +149,11 @@ func GenerateSingBoxConfigWithOptions(
 
 	outbounds := []map[string]any{
 		{
-			"type":      "selector",
-			"tag":       defaultExitTag,
-			"outbounds": selectorOutbounds,
-			"default":   selectedDefault,
+			"type":                        "selector",
+			"tag":                         defaultExitTag,
+			"outbounds":                   selectorOutbounds,
+			"default":                     selectedDefault,
+			"interrupt_exist_connections": true,
 		},
 		{
 			"type": "direct",
@@ -160,11 +175,12 @@ func GenerateSingBoxConfigWithOptions(
 		"address":               []string{defaultTunCIDR},
 		"mtu":                   defaultTunMTU,
 		"auto_route":            true,
-		"strict_route":          true,
+		"strict_route":          false,
+		"stack":                 "mixed",
 		"route_exclude_address": []string{tailscaleCGNATCIDR},
 	}
 	if targetGOOS != "darwin" {
-		tunInbound["interface_name"] = "singbox"
+		tunInbound["interface_name"] = defaultTunInterface
 	}
 
 	inbounds := []map[string]any{
@@ -173,7 +189,7 @@ func GenerateSingBoxConfigWithOptions(
 			"type":        "mixed",
 			"tag":         "mixed-in",
 			"listen":      "127.0.0.1",
-			"listen_port": defaultMixedPort,
+			"listen_port": DefaultMixedPort,
 		},
 	}
 
@@ -185,6 +201,14 @@ func GenerateSingBoxConfigWithOptions(
 	}
 	dnsRules := []map[string]any{
 		{
+			"clash_mode": "Direct",
+			"server":     dnsCNTag,
+		},
+		{
+			"clash_mode": "Global",
+			"server":     dnsProxyTag,
+		},
+		{
 			"domain_suffix": []string{"tailscale.com", "tailscale.io"},
 			"server":        dnsCNTag,
 		},
@@ -194,6 +218,14 @@ func GenerateSingBoxConfigWithOptions(
 			dnsRules = append(dnsRules, map[string]any{
 				"rule_set": []string{"geosite-cn"},
 				"server":   dnsCNTag,
+			})
+		}
+	}
+	if availableRuleSets == nil || availableRuleSets["geosite-geolocation-!cn"] {
+		if hasRuleSetTag(ruleSets, "geosite-geolocation-!cn") {
+			dnsRules = append(dnsRules, map[string]any{
+				"rule_set": []string{"geosite-geolocation-!cn"},
+				"server":   dnsProxyTag,
 			})
 		}
 	}
@@ -217,32 +249,56 @@ func GenerateSingBoxConfigWithOptions(
 		Strategy: "ipv4_only",
 	}
 
-	routeRules, finalOutbound := buildRouteRules(mode, rules, settings.FallbackProxyEnabled, availableRuleSets)
+	routeRules, finalOutbound := buildRouteRules(mode, nodes, rules, ruleSets, settings.FallbackProxyEnabled, availableRuleSets)
+
+	logCfg := singBoxLog{
+		Level:     "warn",
+		Timestamp: true,
+	}
+	expCfg := &singBoxExperimental{
+		ClashAPI: &singBoxClashAPI{
+			ExternalController: clashAddr,
+			DefaultMode:        clashModeName(mode),
+		},
+	}
+	if dataDir != "" {
+		logCfg.Output = filepath.ToSlash(filepath.Join(dataDir, "sing-box.log"))
+		expCfg.CacheFile = &singBoxCacheFile{
+			Enabled:  true,
+			Path:     filepath.ToSlash(filepath.Join(dataDir, "cache.db")),
+			StoreDNS: true,
+		}
+	}
 
 	cfg := singBoxConfig{
-		Log: singBoxLog{
-			Level:     "info",
-			Timestamp: true,
-		},
-		Experimental: &singBoxExperimental{
-			ClashAPI: &singBoxClashAPI{
-				ExternalController: clashAddr,
-			},
-		},
-		DNS:       dnsCfg,
-		Inbounds:  inbounds,
-		Endpoints: endpoints,
-		Outbounds: outbounds,
+		Log:          logCfg,
+		Experimental: expCfg,
+		DNS:          dnsCfg,
+		Inbounds:     inbounds,
+		Endpoints:    endpoints,
+		Outbounds:    outbounds,
 		Route: singBoxRoute{
 			Rules:                 routeRules,
 			RuleSet:               ruleSets,
 			Final:                 finalOutbound,
+			FindProcess:           true,
 			AutoDetectInterface:   true,
 			DefaultDomainResolver: dnsCNTag,
 		},
 	}
 
 	return json.MarshalIndent(cfg, "", "  ")
+}
+
+func clashModeName(mode contract.RoutingMode) string {
+	switch mode {
+	case contract.ModeGlobal:
+		return "Global"
+	case contract.ModeDirect:
+		return "Direct"
+	default:
+		return "Rule"
+	}
 }
 
 func buildOrgEndpoints(
@@ -305,14 +361,23 @@ func buildOrgEndpoints(
 		if stateDir == "" {
 			stateDir = filepath.ToSlash(filepath.Join("data", "ts-state-"+orgID))
 		}
+		nodeHost := strings.TrimSpace(org.NodeHostname)
+		if nodeHost == "" {
+			nodeHost = sanitizeEndpointHostname("singtail-" + orgID)
+		}
 
 		epTag := "ep-" + orgID
 		ep := map[string]any{
 			"type":                       "tailscale",
 			"tag":                        epTag,
 			"state_directory":            stateDir,
+			"hostname":                   nodeHost,
 			"exit_node":                  chosen.TailscaleIP,
 			"exit_node_allow_lan_access": true,
+			"accept_routes":              false,
+			"ephemeral":                  false,
+			"udp_timeout":                "5m",
+			"domain_resolver":            dnsCNTag,
 		}
 		if cu := strings.TrimSpace(org.ControlURL); cu != "" {
 			ep["control_url"] = cu
@@ -322,6 +387,29 @@ func buildOrgEndpoints(
 	}
 
 	return endpoints, epTags, activeOrgID
+}
+
+func sanitizeEndpointHostname(raw string) string {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range lower {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+		} else if !lastDash && b.Len() > 0 {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 63 {
+		out = strings.TrimRight(out[:63], "-")
+	}
+	if out == "" {
+		return "singtail-client"
+	}
+	return out
 }
 
 func buildFallbackProxyOutbound(rawAddr string) (map[string]any, error) {
@@ -425,24 +513,60 @@ func hasRuleSetTag(ruleSets []map[string]any, tag string) bool {
 	return false
 }
 
+func collectExitPublicCIDRs(nodes []contract.ExitNode) []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0)
+	for _, n := range nodes {
+		raw := strings.TrimSpace(n.PublicIP)
+		if raw == "" || raw == "-" {
+			continue
+		}
+		ip := net.ParseIP(raw)
+		if ip == nil || ip.IsUnspecified() || ip.IsLoopback() {
+			continue
+		}
+		cidr := ip.String() + "/32"
+		if ip.To4() == nil {
+			cidr = ip.String() + "/128"
+		}
+		if !seen[cidr] {
+			seen[cidr] = true
+			out = append(out, cidr)
+		}
+	}
+	return out
+}
+
 func buildRouteRules(
 	mode contract.RoutingMode,
+	nodes []contract.ExitNode,
 	rules []contract.Rule,
+	ruleSets []map[string]any,
 	fallbackEnabled bool,
 	availableRuleSets map[string]bool,
 ) ([]map[string]any, string) {
 	routeRules := []map[string]any{
 		{
-			"action": "sniff",
+			"action":  "sniff",
+			"timeout": "500ms",
 		},
 		{
 			"protocol": "dns",
 			"action":   "hijack-dns",
 		},
 		{
+			"clash_mode": "Direct",
+			"outbound":   directTag,
+		},
+		{
+			"clash_mode": "Global",
+			"outbound":   defaultExitTag,
+		},
+		{
 			"process_name": []string{
 				"tailscaled.exe",
 				"tailscale-ipn.exe",
+				"tailscale.exe",
 				"verge-mihomo.exe",
 				"clash-verge.exe",
 				"Tailscale",
@@ -462,6 +586,13 @@ func buildRouteRules(
 			"ip_cidr":  []string{tailscaleCGNATCIDR},
 			"outbound": directTag,
 		},
+	}
+
+	if exitCIDRs := collectExitPublicCIDRs(nodes); len(exitCIDRs) > 0 {
+		routeRules = append(routeRules, map[string]any{
+			"ip_cidr":  exitCIDRs,
+			"outbound": directTag,
+		})
 	}
 
 	switch mode {
@@ -523,6 +654,13 @@ func buildRouteRules(
 			entry["outbound"] = target
 		}
 		routeRules = append(routeRules, entry)
+	}
+
+	if !finalReject && finalOutbound == defaultExitTag && (availableRuleSets == nil || availableRuleSets["geosite-geolocation-!cn"]) && hasRuleSetTag(ruleSets, "geosite-geolocation-!cn") {
+		routeRules = append(routeRules, map[string]any{
+			"rule_set": []string{"geosite-geolocation-!cn"},
+			"outbound": defaultExitTag,
+		})
 	}
 
 	if finalReject {

@@ -18,12 +18,12 @@ import (
 
 func TestGenerateSingBoxConfigComplete(t *testing.T) {
 	orgs := []contract.Organization{
-		{ID: "org-personal", Name: "Personal Tailnet", StateDir: "data/ts-state-org-personal"},
-		{ID: "org-studio", Name: "GolfJoy Studio", StateDir: "data/ts-state-org-studio"},
+		{ID: "org-personal", Name: "Personal Tailnet", NodeHostname: "singtail-org-personal", StateDir: "data/ts-state-org-personal"},
+		{ID: "org-studio", Name: "GolfJoy Studio", NodeHostname: "singbox-golfjoy", StateDir: "data/ts-state-org-studio"},
 	}
 	nodes := []contract.ExitNode{
-		{ID: "ts-hk-cloud", OrgID: "org-personal", TailscaleIP: "100.91.77.63", Online: true, Healthy: true},
-		{ID: "ts-us-macmini", OrgID: "org-studio", TailscaleIP: "100.123.114.28", Online: true, Healthy: true},
+		{ID: "ts-hk-cloud", OrgID: "org-personal", TailscaleIP: "100.91.77.63", PublicIP: "43.153.149.111", Online: true, Healthy: true},
+		{ID: "ts-us-macmini", OrgID: "org-studio", TailscaleIP: "100.123.114.28", PublicIP: "68.225.25.59", Online: true, Healthy: true},
 		{ID: "ts-sg-relay", OrgID: "org-studio", TailscaleIP: "100.123.45.90", Online: true, Healthy: true},
 		{ID: "ts-offline", OrgID: "org-studio", TailscaleIP: "100.123.99.99", Online: false, Healthy: false},
 	}
@@ -72,17 +72,17 @@ func TestGenerateSingBoxConfigComplete(t *testing.T) {
 		t.Fatalf("expected 2 inbounds, got %d", len(inbounds))
 	}
 	tun := inbounds[0].(map[string]any)
-	if tun["interface_name"] != "singbox" || int(tun["mtu"].(float64)) != 1280 {
+	if tun["interface_name"] != "singtail" || int(tun["mtu"].(float64)) != 1280 || tun["strict_route"] != false || tun["stack"] != "mixed" {
 		t.Fatalf("unexpected tun inbound: %+v", tun)
 	}
-	if !containsString(tun["address"].([]any), "172.19.0.1/30") {
+	if !containsString(tun["address"].([]any), "172.19.0.5/30") {
 		t.Fatalf("missing tun address: %+v", tun["address"])
 	}
 	if !containsString(tun["route_exclude_address"].([]any), "100.64.0.0/10") {
 		t.Fatalf("missing 100.64.0.0/10 exclusion: %+v", tun["route_exclude_address"])
 	}
 	mixed := inbounds[1].(map[string]any)
-	if mixed["listen"] != "127.0.0.1" || int(mixed["listen_port"].(float64)) != 7899 {
+	if mixed["listen"] != "127.0.0.1" || int(mixed["listen_port"].(float64)) != DefaultMixedPort {
 		t.Fatalf("unexpected mixed inbound: %+v", mixed)
 	}
 
@@ -107,10 +107,10 @@ func TestGenerateSingBoxConfigComplete(t *testing.T) {
 	}
 	ep0 := endpoints[0].(map[string]any)
 	ep1 := endpoints[1].(map[string]any)
-	if ep0["tag"] != "ep-org-personal" || ep0["exit_node"] != "100.91.77.63" {
+	if ep0["tag"] != "ep-org-personal" || ep0["exit_node"] != "100.91.77.63" || ep0["domain_resolver"] != "dns-cn" || ep0["hostname"] != "singtail-org-personal" {
 		t.Fatalf("unexpected first endpoint: %+v", ep0)
 	}
-	if ep1["tag"] != "ep-org-studio" || ep1["type"] != "tailscale" || ep1["state_directory"] != "data/ts-state-org-studio" || ep1["exit_node"] != "100.123.45.90" {
+	if ep1["tag"] != "ep-org-studio" || ep1["type"] != "tailscale" || ep1["state_directory"] != "data/ts-state-org-studio" || ep1["exit_node"] != "100.123.45.90" || ep1["hostname"] != "singbox-golfjoy" {
 		t.Fatalf("unexpected studio endpoint: %+v", ep1)
 	}
 
@@ -134,18 +134,25 @@ func TestGenerateSingBoxConfigComplete(t *testing.T) {
 
 	// Verify built-in process bypass and enabled rules
 	route := parsed["route"].(map[string]any)
+	if route["find_process"] != true {
+		t.Fatalf("expected route.find_process=true, got %v", route["find_process"])
+	}
 	routeJSON, _ := json.Marshal(route)
 	routeStr := string(routeJSON)
 	for _, needle := range []string{
 		"tailscaled.exe",
+		"tailscale.exe",
 		"verge-mihomo.exe",
 		"clash-verge.exe",
 		"IPNExtension",
+		"43.153.149.111/32",
+		"68.225.25.59/32",
 		"8.128.0.0/10",
 		"netflix.com",
 		"fallback-proxy",
 		"hijack-dns",
 		"sniff",
+		"clash_mode",
 	} {
 		if !strings.Contains(routeStr, needle) {
 			t.Fatalf("route missing %q: %s", needle, routeStr)

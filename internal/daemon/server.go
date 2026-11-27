@@ -31,11 +31,12 @@ import (
 
 const (
 	defaultDataDir     = "./data"
-	defaultMixedProxy  = "127.0.0.1:7899"
+	defaultMixedProxy  = engine.DefaultMixedProxy
 	maxJSONBodyBytes   = 2 << 20
 	sampleInterval     = 2 * time.Second
 	bytesPerMB         = 1024 * 1024
-	exitSwitchTimeout  = 8 * time.Second
+	exitSwitchTimeout  = 10 * time.Second
+	runtimeStartTimout = 40 * time.Second
 	providerFetchLimit = 16 << 20
 )
 
@@ -314,13 +315,22 @@ func (s *Server) handleSetTun(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "请先挂载包含在线出口节点的 Tailscale 组织")
 			return
 		}
+		if s.rt == nil || !s.rt.IsRunning() {
+			if extPath := findExternalSingBoxProcess(); extPath != "" {
+				writeJSONError(w, http.StatusConflict, fmt.Sprintf("检测到系统中已有外部 sing-box 正在运行（%s），请先停止旧进程再开启 TUN", extPath))
+				return
+			}
+		}
 	}
 
 	tunBefore, _, _, _, _ := s.ctrl.State()
 	s.ctrl.SetTun(req.Enabled)
 
 	if s.shouldManageSingBox() {
-		if err := s.applySingBoxRuntime(r.Context()); err != nil {
+		runCtx, cancel := context.WithTimeout(context.Background(), runtimeStartTimout)
+		err := s.applySingBoxRuntime(runCtx)
+		cancel()
+		if err != nil {
 			s.ctrl.SetTun(tunBefore)
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -394,7 +404,10 @@ func (s *Server) handleSwitchExit(w http.ResponseWriter, r *http.Request) {
 
 	tunEnabled, _, prevExitID, _, _ := s.ctrl.State()
 	if s.shouldManageSingBox() && tunEnabled {
-		if err := s.applySingBoxRuntimeWithExit(r.Context(), target.ID); err != nil {
+		runCtx, runCancel := context.WithTimeout(context.Background(), runtimeStartTimout)
+		err := s.applySingBoxRuntimeWithExit(runCtx, target.ID)
+		runCancel()
+		if err != nil {
 			_ = s.applySingBoxRuntimeWithExit(context.Background(), prevExitID)
 			s.ctrl.SetBanner(&contract.BannerNotice{
 				Kind: "rollback",
@@ -1195,6 +1208,29 @@ func (s *Server) sampleRealTick(now time.Time) {
 	s.clashTotalsMu.Unlock()
 
 	_ = s.stats.RecordTick(now, active.OrgID, active.ID, deltaDown, deltaUp)
+}
+
+func findExternalSingBoxProcess() string {
+	apps, err := syswin.ListRunningApps()
+	if err != nil || len(apps) == 0 {
+		return ""
+	}
+	ownBin := strings.ToLower(filepath.Clean(engine.FindSingBoxBinary()))
+	for _, app := range apps {
+		name := strings.ToLower(strings.TrimSpace(app.Process))
+		if name != "sing-box.exe" && name != "sing-box" {
+			continue
+		}
+		cleanPath := filepath.Clean(strings.TrimSpace(app.Path))
+		if ownBin != "" && cleanPath != "." && strings.EqualFold(cleanPath, ownBin) {
+			continue
+		}
+		if cleanPath != "" && cleanPath != "." {
+			return cleanPath
+		}
+		return app.Process
+	}
+	return ""
 }
 
 func hasAnyOnlineNode(orgs []contract.Organization, nodes []contract.ExitNode) bool {

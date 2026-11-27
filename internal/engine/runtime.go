@@ -23,10 +23,10 @@ import (
 )
 
 const (
-	clashReadyTimeout  = 8 * time.Second
+	clashReadyTimeout  = 35 * time.Second
 	clashPollInterval  = 150 * time.Millisecond
 	clashConnTimeout   = 1200 * time.Millisecond
-	singBoxCheckTimout = 6 * time.Second
+	singBoxCheckTimout = 10 * time.Second
 	maxStderrBuffer    = 32 * 1024
 )
 
@@ -196,6 +196,7 @@ func (r *Runtime) ApplyRuntime(ctx context.Context, req RuntimeApplyRequest) err
 		req.Providers,
 		req.Settings,
 		ConfigOptions{
+			DataDir:      dataDir,
 			RulesDir:     rulesDir,
 			ClashAPIAddr: r.ClashAPIAddr(),
 			TargetGOOS:   runtime.GOOS,
@@ -251,14 +252,29 @@ func (r *Runtime) ApplyRuntime(ctx context.Context, req RuntimeApplyRequest) err
 	r.doneCh = doneCh
 	r.stderrBuf = stderrBuf
 
-	if err := r.waitForClashReady(ctx, doneCh, stderrBuf); err != nil {
+	logPath := filepath.Join(dataDir, "sing-box.log")
+	if err := r.waitForClashReady(ctx, doneCh, stderrBuf, logPath); err != nil {
 		_ = r.stopLocked()
 		return err
 	}
 	return nil
 }
 
-func (r *Runtime) waitForClashReady(ctx context.Context, doneCh <-chan struct{}, stderrBuf *tailBuffer) error {
+func readLogFileTail(logPath string, maxLines int) string {
+	if strings.TrimSpace(logPath) == "" {
+		return ""
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	if len(data) > maxStderrBuffer {
+		data = data[len(data)-maxStderrBuffer:]
+	}
+	return tailOutputLines(string(data), maxLines)
+}
+
+func (r *Runtime) waitForClashReady(ctx context.Context, doneCh <-chan struct{}, stderrBuf *tailBuffer, logPath string) error {
 	deadline := time.NewTimer(clashReadyTimeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(clashPollInterval)
@@ -278,6 +294,9 @@ func (r *Runtime) waitForClashReady(ctx context.Context, doneCh <-chan struct{},
 			exitErr := r.exitErr
 			r.exitMu.Unlock()
 			detail := tailOutputLines(stderrBuf.String(), 6)
+			if detail == "" {
+				detail = readLogFileTail(logPath, 6)
+			}
 			if detail == "" && exitErr != nil {
 				detail = exitErr.Error()
 			}
@@ -289,13 +308,16 @@ func (r *Runtime) waitForClashReady(ctx context.Context, doneCh <-chan struct{},
 			return ctx.Err()
 		case <-deadline.C:
 			detail := tailOutputLines(stderrBuf.String(), 6)
+			if detail == "" {
+				detail = readLogFileTail(logPath, 6)
+			}
 			if detail != "" {
 				if looksLikePrivilegeError(detail) {
 					return fmt.Errorf("启动虚拟网卡失败（需要管理员/系统服务权限）: %s", detail)
 				}
-				return fmt.Errorf("等待 sing-box 控制口就绪超时: %s", detail)
+				return fmt.Errorf("等待 sing-box 隧道握手超时: %s", detail)
 			}
-			return errors.New("等待 sing-box 控制口就绪超时（8s）")
+			return errors.New("等待 sing-box 隧道握手超时（35s）")
 		case <-ticker.C:
 		}
 	}

@@ -17,6 +17,7 @@ export interface Organization {
   name: string;
   account: string;
   localTailscaleIp: string;
+  nodeHostname?: string;
   controlUrl?: string;
   stateDir?: string;
   lastSync: string;
