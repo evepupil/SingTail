@@ -1,11 +1,11 @@
 # SingTail
 
-面向自建 Tailscale 出口节点用户的 Windows 桌面客户端：把多组织接入、出口测速切换、国内外智能分流与流量统计整合成开箱即用的图形界面，告别命令行脚本与复杂网页控制台。
+面向自建 Tailscale 出口节点用户的 Windows / macOS 桌面客户端：把多组织接入、出口测速切换、国内外智能分流与流量统计整合成开箱即用的图形界面，内置 `sing-box 1.14.3` 内核与基础 `.srs` 规则包，告别命令行脚本与复杂网页控制台。
 
 ## 核心优势
 
-1. **多组织出口自动发现**
-   同时挂载个人 Tailnet 与公司/团队等多个 Tailscale 组织，各组织登录状态分目录独立保存、互不覆盖；登录后自动汇总所有开启出口权限（Exit Node）的远端机器，显示直连打洞（P2P）或中继（DERP）状态与实时延迟，点一下即可跨组织切换。
+1. **多组织出口自动发现与双模式接入**
+   同时挂载个人 Tailnet 与公司/团队等多个 Tailscale 组织，支持通过官方网页扫码/点击授权登录（含自建 Headscale 控制地址），也支持直接导入本机已有的 `ts-state` 凭据目录；各组织登录状态分目录独立保存、互不覆盖，登录后自动汇总所有开启出口权限（Exit Node）的远端机器，显示直连打洞（P2P）或中继（DERP）状态与实时延迟，点一下即可跨组织切换。
 
 2. **切换出口自动验 IP，不通自动回滚**
    每次切换出口节点时，后台自动通过本地混合代理端口核验实际公网出口 IP；如果节点超时或未生效，立即自动切回上一个可用出口并弹出横幅提醒，避免误切导致断网。
@@ -23,21 +23,39 @@
 
 ## 下载与使用
 
-每次发布都会在 GitHub Releases 同时提供两份产物，可按习惯任选其一：
+每次发布都会在 GitHub Releases 同时提供 Windows 与 macOS 共四份内置 `sing-box 1.14.3` 内核及 7 个基础 `.srs` 规则包的正式产物，按系统与习惯任选其一即可：
 
-### 方式一：标准安装包（推荐日常使用）
+### Windows 方式一：标准安装包（推荐日常使用）
 
 下载 `SingTail-windows-amd64-setup.exe` 并双击运行安装向导：
-- 自动将程序安装至 `Program Files\SingTail` 并创建桌面与开始菜单快捷方式；
+- 自动将程序、内置 `bin/sing-box.exe` 内核与 `rules/*.srs` 规则包安装至 `Program Files\SingTail`，并创建桌面与开始菜单快捷方式；
 - 自动注册并启动 `SingTailService` 系统后台服务，开机免弹 UAC 框静默驻留，关闭窗口不断网；
-- 需要卸载时，在系统「应用和功能」或开始菜单点击卸载即可自动停止并清理服务。
+- 需要卸载时，在系统「应用和功能」或开始菜单点击卸载即可自动停止并清理服务、内核与规则目录。
 
-### 方式二：绿色便携包（免安装解压即用）
+### Windows 方式二：绿色便携包（免安装解压即用）
 
 下载 `SingTail-windows-amd64-portable.zip`，解压到任意目录即可使用：
+- 压缩包内已包含 `singtail.exe`、`singtail-service.exe`、`bin/sing-box.exe` 与 `rules/*.srs`；
 - 直接双击 `singtail.exe` 启动桌面客户端（未安装系统服务时，桌面端会自动拉起内置守护服务）；
 - 如希望作为 Windows 后台服务开机静默自启，请右键以管理员身份运行目录内的 `install-service.bat`；
 - 如需移除后台服务，右键以管理员身份运行 `uninstall-service.bat`。
+
+### macOS 方式：DMG 镜像安装包（Apple Silicon / Intel）
+
+根据芯片架构选择下载：
+- Apple Silicon（M 系列芯片）：`SingTail-macos-arm64.dmg`
+- Intel 芯片：`SingTail-macos-amd64.dmg`
+
+安装与使用步骤：
+- 双击打开 `.dmg` 镜像，将 `SingTail.app` 拖入右侧 `Applications` 快捷方式（`SingTail.app/Contents/Resources/` 已内置 `bin/sing-box` 与 `rules/*.srs`）；
+- 如需注册或卸载 macOS 后台守护服务，可双击镜像内的 `install-service.command` / `uninstall-service.command`；
+- 打开 `SingTail.app` 后，在主界面点击「挂载组织」即可选择「网页授权登录」（自动拉起浏览器完成 Tailscale / Headscale 授权并同步节点）或「导入已有凭据目录」（指定本机已有的 `ts-state` 目录路径）。
+
+### 挂载 Tailscale 组织（真实 `tsnet` 登录）
+
+1. **网页授权登录（默认）**：点击「+ 挂载 Tailscale 组织」，备注名与 Headscale 控制地址均可留空，点击「获取授权链接」后会自动打开浏览器授权页面，弹窗内每 1.5 秒自动同步授权状态，同意后自动拉取出口节点列表。
+2. **导入已有凭据目录**：切换到「导入已有凭据目录」标签页，填入本机已有 `ts-state` 目录的绝对路径即可直接导入并同步节点。
+3. **移除组织**：进入「设置」页面，在对应组织右侧点击「移除」即可卸载该组织凭据。
 
 ### 隐私与安全
 

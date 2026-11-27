@@ -68,15 +68,14 @@ jobs:
       - name: Verify Windows amd64 cross-compilation (CGO_ENABLED=0)
         run: |
           mkdir -p /tmp/singtail-windows-check
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/singtail-windows-check/ ./cmd/...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/singtail-windows-check/singtail-service.exe ./cmd/singtail-service
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags desktop,production -ldflags="-s -w -H windowsgui" -o /tmp/singtail-windows-check/singtail.exe ./cmd/singtail-desktop
 
   package-windows:
     name: Windows Package (Portable ZIP & Setup EXE)
     needs: ci
     if: github.event_name != 'pull_request'
     runs-on: windows-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -118,20 +117,54 @@ jobs:
           New-Item -ItemType Directory -Force -Path build/windows/dist | Out-Null
           go build -trimpath -ldflags="-s -w" -o build/windows/dist/singtail-service.exe ./cmd/singtail-service
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go build -trimpath -ldflags="-s -w -H windowsgui" -o build/windows/dist/singtail.exe ./cmd/singtail-desktop
+          go build -tags desktop,production -trimpath -ldflags="-s -w -H windowsgui" -o build/windows/dist/singtail.exe ./cmd/singtail-desktop
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item -Path README.md -Destination build/windows/dist/README.md -Force
+
+      - name: Download sing-box 1.14.3 and .srs rule packs
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $binDir = "build/windows/dist/bin"
+          $rulesDir = "build/windows/dist/rules"
+          $tmpDir = "build/windows/tmp-singbox"
+          New-Item -ItemType Directory -Force -Path $binDir, $rulesDir, $tmpDir | Out-Null
+
+          $sbZip = "$tmpDir/sing-box.zip"
+          Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v1.14.3/sing-box-1.14.3-windows-amd64.zip" -OutFile $sbZip
+          Expand-Archive -Path $sbZip -DestinationPath "$tmpDir/extracted" -Force
+          $sbExe = Get-ChildItem -Path "$tmpDir/extracted" -Filter "sing-box.exe" -Recurse | Select-Object -First 1
+          if (-not $sbExe) { throw "sing-box.exe not found in archive" }
+          Copy-Item -Path $sbExe.FullName -Destination "$binDir/sing-box.exe" -Force
+          Remove-Item -Path $tmpDir -Recurse -Force
+
+          $rules = @{
+            "geoip-cn.srs" = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/cn.srs"
+            "geosite-cn.srs" = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
+            "geosite-geolocation-!cn.srs" = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs"
+            "geosite-openai.srs" = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs"
+            "geosite-google.srs" = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-google.srs"
+            "geosite-github.srs" = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-github.srs"
+            "geosite-category-ads-all.srs" = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs"
+          }
+          foreach ($entry in $rules.GetEnumerator()) {
+            $dest = Join-Path $rulesDir $entry.Key
+            Invoke-WebRequest -Uri $entry.Value -OutFile $dest
+            if ((Get-Item $dest).Length -le 0) { throw "Downloaded empty rule file: $($entry.Key)" }
+          }
 
       - name: Package portable ZIP
         shell: pwsh
         run: |
           $portableDir = "release-artifacts/SingTail-portable"
-          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $portableDir, "$portableDir/bin", "$portableDir/rules" | Out-Null
           Copy-Item build/windows/dist/singtail.exe $portableDir/
           Copy-Item build/windows/dist/singtail-service.exe $portableDir/
           Copy-Item build/windows/install-service.bat $portableDir/
           Copy-Item build/windows/uninstall-service.bat $portableDir/
           Copy-Item README.md $portableDir/
+          Copy-Item build/windows/dist/bin/sing-box.exe "$portableDir/bin/sing-box.exe"
+          Copy-Item build/windows/dist/rules/*.srs "$portableDir/rules/"
           Compress-Archive -Path "$portableDir/*" -DestinationPath "release-artifacts/SingTail-windows-amd64-portable.zip" -Force
 
       - name: Build NSIS installer EXE
@@ -152,17 +185,6 @@ jobs:
           makensis /DPRODUCT_VERSION="$version" /DBIN_DIR="dist" /DOUT_FILE="$outPath" build\windows\installer.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Generate SHA256SUMS.txt
-        shell: pwsh
-        run: |
-          Set-Location release-artifacts
-          $files = @("SingTail-windows-amd64-portable.zip", "SingTail-windows-amd64-setup.exe")
-          $lines = foreach ($f in $files) {
-            $hash = (Get-FileHash -Path $f -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $f"
-          }
-          $lines | Out-File -FilePath SHA256SUMS.txt -Encoding ascii
-
       - name: Upload Windows packages to Actions Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -170,14 +192,127 @@ jobs:
           path: |
             release-artifacts/SingTail-windows-amd64-portable.zip
             release-artifacts/SingTail-windows-amd64-setup.exe
-            release-artifacts/SHA256SUMS.txt
+
+  package-macos:
+    name: macOS Package (arm64 & amd64 DMG)
+    needs: ci
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Build frontend and embed into desktop binary
+        run: |
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir frontend build
+          rm -rf cmd/singtail-desktop/frontendDist
+          mkdir -p cmd/singtail-desktop/frontendDist
+          cp -R frontend/dist/. cmd/singtail-desktop/frontendDist/
+
+      - name: Download .srs rule packs
+        run: |
+          RULES_DIR="build/macos/dist/rules"
+          mkdir -p "$RULES_DIR"
+          curl -fsSL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/cn.srs" -o "$RULES_DIR/geoip-cn.srs"
+          curl -fsSL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs" -o "$RULES_DIR/geosite-cn.srs"
+          curl -fsSL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs" -o "$RULES_DIR/geosite-geolocation-!cn.srs"
+          curl -fsSL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs" -o "$RULES_DIR/geosite-openai.srs"
+          curl -fsSL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-google.srs" -o "$RULES_DIR/geosite-google.srs"
+          curl -fsSL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-github.srs" -o "$RULES_DIR/geosite-github.srs"
+          curl -fsSL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs" -o "$RULES_DIR/geosite-category-ads-all.srs"
+
+      - name: Build macOS binaries, bundle sing-box 1.14.3, and package DMGs
+        run: |
+          RAW_REF="${{ github.ref_name }}"
+          VERSION="${RAW_REF#v}"
+          if [ "$RAW_REF" = "$VERSION" ] || [ -z "$VERSION" ]; then
+            VERSION="0.1.0"
+          fi
+          chmod +x build/macos/install-service.command build/macos/uninstall-service.command build/macos/package-dmg.sh
+
+          for ARCH in arm64 amd64; do
+            DIST_DIR="build/macos/dist-${ARCH}"
+            TMP_SB="build/macos/tmp-singbox-${ARCH}"
+            mkdir -p "$DIST_DIR/bin" "$DIST_DIR/rules" "$TMP_SB"
+
+            CGO_ENABLED=0 GOOS=darwin GOARCH="$ARCH" go build -trimpath -ldflags="-s -w" -o "$DIST_DIR/singtail-service" ./cmd/singtail-service
+            CGO_ENABLED=1 CGO_LDFLAGS="-framework UniformTypeIdentifiers" GOOS=darwin GOARCH="$ARCH" go build -tags desktop,production -trimpath -ldflags="-s -w" -o "$DIST_DIR/singtail" ./cmd/singtail-desktop
+
+            curl -fsSL --retry 3 --retry-delay 2 \
+              "https://github.com/SagerNet/sing-box/releases/download/v1.14.3/sing-box-1.14.3-darwin-${ARCH}.tar.gz" \
+              -o "$TMP_SB/sing-box.tar.gz"
+            tar -xzf "$TMP_SB/sing-box.tar.gz" -C "$TMP_SB"
+            SB_BIN="$(find "$TMP_SB" -type f -name 'sing-box' | head -n 1)"
+            if [ -z "$SB_BIN" ]; then
+              echo "sing-box binary not found for darwin-${ARCH}" >&2
+              exit 1
+            fi
+            cp "$SB_BIN" "$DIST_DIR/bin/sing-box"
+            chmod +x "$DIST_DIR/bin/sing-box"
+            rm -rf "$TMP_SB"
+
+            cp build/macos/dist/rules/*.srs "$DIST_DIR/rules/"
+            bash build/macos/package-dmg.sh "$ARCH" "$VERSION"
+          done
+
+      - name: Upload macOS packages to Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SingTail-macOS-Packages
+          path: |
+            release-artifacts/SingTail-macos-arm64.dmg
+            release-artifacts/SingTail-macos-amd64.dmg
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [package-windows, package-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows and macOS packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: SingTail-*-Packages
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        run: |
+          cd release-artifacts
+          sha256sum \
+            SingTail-windows-amd64-setup.exe \
+            SingTail-windows-amd64-portable.zip \
+            SingTail-macos-arm64.dmg \
+            SingTail-macos-amd64.dmg > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Publish GitHub Release on version tag
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            release-artifacts/SingTail-windows-amd64-portable.zip
             release-artifacts/SingTail-windows-amd64-setup.exe
+            release-artifacts/SingTail-windows-amd64-portable.zip
+            release-artifacts/SingTail-macos-arm64.dmg
+            release-artifacts/SingTail-macos-amd64.dmg
             release-artifacts/SHA256SUMS.txt

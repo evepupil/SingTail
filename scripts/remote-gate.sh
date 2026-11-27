@@ -13,7 +13,7 @@ if [ -s "$HOME/.nvm/nvm.sh" ]; then
   source "$HOME/.nvm/nvm.sh"
 fi
 
-echo "==> [1/6] Checking gofmt..."
+echo "==> [1/7] Checking gofmt..."
 UNFORMATTED="$(gofmt -l cmd internal)"
 if [ -n "$UNFORMATTED" ]; then
   echo "Unformatted Go files:"
@@ -21,27 +21,36 @@ if [ -n "$UNFORMATTED" ]; then
   exit 1
 fi
 
-echo "==> [2/6] Running frontend install, typecheck, test, and build..."
+echo "==> [2/7] Running frontend install, typecheck, test, and build..."
 pnpm --dir frontend install --frozen-lockfile
 pnpm --dir frontend typecheck
 pnpm --dir frontend test
 pnpm --dir frontend build
 
-echo "==> [3/6] Syncing frontend/dist into cmd/singtail-desktop/frontendDist..."
+echo "==> [3/7] Syncing frontend/dist into cmd/singtail-desktop/frontendDist..."
 rm -rf cmd/singtail-desktop/frontendDist
 mkdir -p cmd/singtail-desktop/frontendDist
 cp -R frontend/dist/. cmd/singtail-desktop/frontendDist/
 
-echo "==> [4/6] Running go vet..."
+echo "==> [4/7] Running go vet..."
 go vet ./...
 
-echo "==> [5/6] Running go test -race..."
+echo "==> [5/7] Running go test -race..."
 go test -race ./...
 
-echo "==> [6/6] Cross-compiling Windows amd64 binaries (CGO_ENABLED=0)..."
 TMP_BIN_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_BIN_DIR"' EXIT
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o "$TMP_BIN_DIR/" ./cmd/...
+
+echo "==> [6/7] Cross-compiling Windows amd64 Wails frameless & service binaries (CGO_ENABLED=0)..."
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$TMP_BIN_DIR/singtail-service.exe" ./cmd/singtail-service
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags desktop,production -trimpath -ldflags="-s -w -H windowsgui" -o "$TMP_BIN_DIR/singtail.exe" ./cmd/singtail-desktop
+
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo "==> [7/7] Compiling macOS arm64 & amd64 Wails frameless & service binaries..."
+  GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$TMP_BIN_DIR/singtail-service-darwin-arm64" ./cmd/singtail-service
+  GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 CGO_LDFLAGS="-framework UniformTypeIdentifiers" go build -tags desktop,production -trimpath -ldflags="-s -w" -o "$TMP_BIN_DIR/singtail-darwin-arm64" ./cmd/singtail-desktop
+  GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 CGO_LDFLAGS="-framework UniformTypeIdentifiers" go build -tags desktop,production -trimpath -ldflags="-s -w" -o "$TMP_BIN_DIR/singtail-darwin-amd64" ./cmd/singtail-desktop
+fi
 
 echo "==> All SingTail remote gates passed!"
 ls -lh "$TMP_BIN_DIR"

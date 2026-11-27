@@ -22,6 +22,8 @@ InstallDirRegKey HKLM "${UNINSTALL_KEY}" "InstallLocation"
 RequestExecutionLevel admin
 
 !define MUI_ABORTWARNING
+!define MUI_ICON "singtail.ico"
+!define MUI_UNICON "singtail.ico"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\singtail.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Launch ${PRODUCT_NAME}"
 
@@ -48,8 +50,17 @@ Section "${PRODUCT_NAME}" SecMain
   File "${BIN_DIR}\singtail.exe"
   File "${BIN_DIR}\singtail-service.exe"
   File "${BIN_DIR}\README.md"
+  File "singtail.ico"
   File "install-service.bat"
   File "uninstall-service.bat"
+
+  SetOutPath "$INSTDIR\bin"
+  File "${BIN_DIR}\bin\sing-box.exe"
+
+  SetOutPath "$INSTDIR\rules"
+  File "${BIN_DIR}\rules\*.srs"
+
+  SetOutPath "$INSTDIR"
 
   ; Register and start Windows background daemon service
   nsExec::ExecToLog '"$INSTDIR\singtail-service.exe" -install'
@@ -57,9 +68,9 @@ Section "${PRODUCT_NAME}" SecMain
 
   ; Start Menu and Desktop shortcuts
   CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
-  CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\singtail.exe"
+  CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\singtail.exe" "" "$INSTDIR\singtail.ico" 0
   CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\Uninstall ${PRODUCT_NAME}.lnk" "$INSTDIR\Uninstall.exe"
-  CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\singtail.exe"
+  CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\singtail.exe" "" "$INSTDIR\singtail.ico" 0
 
   ; Uninstaller and Add/Remove Programs registration
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -84,9 +95,16 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\${PRODUCT_NAME}\Uninstall ${PRODUCT_NAME}.lnk"
   RMDir "$SMPROGRAMS\${PRODUCT_NAME}"
 
+  Delete "$INSTDIR\bin\sing-box.exe"
+  RMDir "$INSTDIR\bin"
+
+  Delete "$INSTDIR\rules\*.srs"
+  RMDir "$INSTDIR\rules"
+
   Delete "$INSTDIR\singtail.exe"
   Delete "$INSTDIR\singtail-service.exe"
   Delete "$INSTDIR\README.md"
+  Delete "$INSTDIR\singtail.ico"
   Delete "$INSTDIR\install-service.bat"
   Delete "$INSTDIR\uninstall-service.bat"
   Delete "$INSTDIR\Uninstall.exe"

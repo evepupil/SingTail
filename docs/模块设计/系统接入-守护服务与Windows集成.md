@@ -28,9 +28,9 @@
 
 ## 4. 当前实现
 
-- `internal/daemon/server.go`：实现全部 18 个 REST 接口、2 秒流量采样调度、静态前端 SPA 托管、本机回环 `Origin` 校验（显式拦截 `Origin: null` 沙箱请求）及 `POST/PUT` `application/json` 校验。
-- `internal/syswin/`：通过 `_windows.go` 与 `_stub.go` 分离，在纯 Go（`CGO_ENABLED=0`）下实现进程枚举、带 `syscall.EscapeArg` 安全引号转义的 Windows 服务注册管理及 Win32 系统托盘。
-- `cmd/singtail-service/main.go`：支持 `-listen`、`-data-dir`、`-web-dir`、`-install`、`-uninstall` 及 Windows SCM 宿主模式。
+- `internal/daemon/server.go`：默认零模拟数据生产模式启动，提供组织网页授权轮询（`/api/orgs/login/start`、`/api/orgs/login/poll`）、凭据目录导入（`/api/orgs/import-dir`）、组织移除、系统浏览器唤起（`/api/browser/open`）等全部控制接口；兼容本地回环与 Wails 原生窗口 `Origin`（`wails://` 与 `wails.localhost`）；开启 TUN 时自动异步核验并写回当前出口公网 IP。
+- `internal/syswin/`：Windows 下通过纯 Go（`CGO_ENABLED=0`）实现进程枚举、Windows 服务注册管理，以及带专属黄绿 `ST` 像素图标与动态实时右键菜单（开关 TUN、切换分流模式、秒切出口节点）的原生任务栏系统托盘；macOS 下通过 `process_darwin.go` 与 `service_darwin.go` 实现进程枚举与 `LaunchDaemon` 提权服务安装。
+- `cmd/singtail-service/main.go`：支持跨平台默认数据目录解析、`-listen`、`-data-dir`、`-web-dir`、`-install`、`-uninstall` 及后台服务宿主模式。
 - `internal/daemon/server_test.go` & `internal/syswin/syswin_test.go`：全量单测与竞态测试全部通过。
 
 ## 5. 验证方式
