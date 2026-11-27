@@ -36,7 +36,10 @@ export function renderProvidersView(state) {
         <span class="tag-sharp">${state.providers.length} 个规则包 · 共 ${totalEntries.toLocaleString()} 条</span>
       </div>
       <div class="view-actions">
-        <button type="button" class="btn-hairline" data-action="refresh-providers" data-testid="btn-refresh-providers">↻ 全部更新并验包</button>
+        <button type="button" class="btn-hairline" data-action="refresh-providers" data-testid="btn-refresh-providers">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>
+          <span>全部更新并验包</span>
+        </button>
         <button type="button" class="btn-lime" data-open-modal="add-provider" data-testid="btn-add-provider">+ 添加规则订阅</button>
       </div>
     </div>

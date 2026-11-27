@@ -33,19 +33,25 @@ export function renderConnectionsView(state) {
     { id: "REJECT", label: "已拦截" }
   ];
 
+  const formatRate = (kb) => {
+    if (kb <= 0) return "—";
+    if (kb >= 1000) return `${(kb / 1024).toFixed(1)} MB/s`;
+    return `${Math.round(kb)} KB/s`;
+  };
+
   const rowsHtml = filtered
     .map((c) => {
       const isSel = selected && c.id === selected.id;
       return `
         <tr class="${isSel ? "is-selected" : ""}" data-select-conn="${esc(c.id)}" style="cursor:pointer;" data-testid="conn-row-${esc(c.id)}">
-          <td class="font-mono-ui" style="width:128px;color:var(--text-primary);font-weight:500;">${esc(c.process)}</td>
+          <td class="font-mono-ui" style="width:116px;color:var(--text-primary);font-weight:500;">${esc(c.process)}</td>
           <td class="font-mono-ui" title="${esc(c.host)}:${c.port}">${esc(c.host)}<span style="color:var(--text-subtle);">:${c.port}</span></td>
-          <td style="width:168px;" title="${esc(c.matchedRule)}"><span class="font-mono-ui" style="font-size:11.5px;color:var(--text-muted);">${esc(c.matchedRule)}</span></td>
-          <td style="width:138px;">${renderActionBadge(c.routeAction, activeExit.hostname)}</td>
-          <td class="font-mono-ui" style="width:94px;text-align:right;color:var(--accent-text);">
-            ${c.downKBps > 0 ? `${c.downKBps.toFixed(1)} KB/s` : "—"}
+          <td style="width:144px;" title="${esc(c.matchedRule)}"><span class="font-mono-ui" style="font-size:11.5px;color:var(--text-muted);">${esc(c.matchedRule)}</span></td>
+          <td style="width:148px;">${renderActionBadge(c.routeAction, activeExit.hostname)}</td>
+          <td class="font-mono-ui" style="width:84px;text-align:right;color:var(--accent-text);">
+            ${formatRate(c.downKBps)}
           </td>
-          <td class="font-mono-ui" style="width:78px;text-align:right;color:var(--text-subtle);">${esc(c.totalBytes)}</td>
+          <td class="font-mono-ui" style="width:72px;text-align:right;color:var(--text-subtle);">${esc(c.totalBytes)}</td>
         </tr>
       `;
     })
@@ -133,12 +139,12 @@ export function renderConnectionsView(state) {
             ? `<table class="data-table" aria-label="实时连接列表">
                 <thead>
                   <tr>
-                    <th style="width:128px;">进程名</th>
-                    <th>目标域名 / 端口</th>
-                    <th style="width:168px;">命中规则</th>
-                    <th style="width:138px;">实际走向</th>
-                    <th style="width:94px;text-align:right;">下行速率</th>
-                    <th style="width:78px;text-align:right;">累计</th>
+                    <th style="width:116px;">进程</th>
+                    <th>目标地址</th>
+                    <th style="width:144px;">命中规则</th>
+                    <th style="width:148px;">实际走向</th>
+                    <th style="width:84px;text-align:right;">下行速率</th>
+                    <th style="width:72px;text-align:right;">累计</th>
                   </tr>
                 </thead>
                 <tbody>${rowsHtml}</tbody>

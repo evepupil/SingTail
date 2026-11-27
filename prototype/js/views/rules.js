@@ -34,13 +34,13 @@ export function renderRulesView(state) {
           const canMoveDown = !rule.locked && fullIdx < state.rules.length - 3;
           return `
             <tr class="${rule.enabled ? "" : "is-disabled"}" data-testid="rule-row-${esc(rule.id)}">
-              <td class="font-mono-ui" style="width:52px;color:var(--text-subtle);">#${String(fullIdx + 1).padStart(2, "0")}</td>
-              <td style="width:136px;"><span class="tag-sharp">${esc(rule.type)}</span></td>
+              <td class="font-mono-ui" style="width:50px;color:var(--text-subtle);">#${String(fullIdx + 1).padStart(2, "0")}</td>
+              <td style="width:134px;"><span class="tag-sharp">${esc(rule.type)}</span></td>
               <td class="font-mono-ui selectable-text" title="${esc(rule.payload)}" style="color:var(--text-primary);">${esc(rule.payload)}</td>
-              <td style="width:146px;">${renderActionBadge(rule.action, activeExit.hostname)}</td>
-              <td title="${esc(rule.note)}" style="width:210px;color:var(--text-muted);">${esc(rule.note)}</td>
-              <td class="font-mono-ui" style="width:86px;text-align:right;color:var(--text-subtle);">${rule.hits.toLocaleString()}</td>
-              <td style="width:142px;text-align:right;">
+              <td style="width:154px;">${renderActionBadge(rule.action, activeExit.hostname)}</td>
+              <td title="${esc(rule.note)}" style="width:196px;color:var(--text-muted);">${esc(rule.note)}</td>
+              <td class="font-mono-ui" style="width:82px;text-align:right;color:var(--text-subtle);">${rule.hits.toLocaleString()}</td>
+              <td style="width:168px;text-align:right;overflow:visible;">
                 ${
                   rule.locked
                     ? `<span class="tag-sharp" title="系统底层保护规则">系统锁定</span>`
@@ -98,13 +98,13 @@ export function renderRulesView(state) {
           ? `<table class="data-table" aria-label="分流规则列表">
               <thead>
                 <tr>
-                  <th style="width:52px;">顺序</th>
-                  <th style="width:136px;">匹配类型</th>
+                  <th style="width:50px;">顺序</th>
+                  <th style="width:134px;">匹配类型</th>
                   <th>匹配内容</th>
-                  <th style="width:146px;">走向策略</th>
-                  <th style="width:210px;">备注</th>
-                  <th style="width:86px;text-align:right;">命中次数</th>
-                  <th style="width:142px;text-align:right;">操作</th>
+                  <th style="width:154px;">走向策略</th>
+                  <th style="width:196px;">备注</th>
+                  <th style="width:82px;text-align:right;">命中次数</th>
+                  <th style="width:168px;text-align:right;">操作</th>
                 </tr>
               </thead>
               <tbody>${rowsHtml}</tbody>

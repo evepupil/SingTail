@@ -95,7 +95,10 @@ export function renderOverviewView(state) {
         <span class="tag-sharp ${state.tunEnabled ? "tag-green" : ""}">${state.tunEnabled ? "TUN 已接管" : "已停用"}</span>
       </div>
       <div class="view-actions">
-        <button type="button" class="btn-hairline" data-action="ping-nodes" data-testid="btn-ping-nodes">↻ 探测延迟</button>
+        <button type="button" class="btn-hairline" data-action="ping-nodes" data-testid="btn-ping-nodes">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>
+          <span>探测延迟</span>
+        </button>
         <button type="button" class="btn-lime" data-open-modal="add-org" data-testid="btn-add-org">+ 挂载新组织</button>
       </div>
     </div>
