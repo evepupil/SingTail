@@ -1,0 +1,210 @@
+/* SingTail Architectural Desktop Tokens — Low-radius wireframe aesthetic */
+:root {
+  color-scheme: dark;
+
+  --font-sans: "Geist", "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "Geist Mono", "Cascadia Mono", "SFMono-Regular", Consolas, Menlo, monospace;
+  --font-pixel: "Silkscreen", "Geist Mono", monospace;
+
+  /* Deep charcoal desktop ramp */
+  --bg-rail: #121214;
+  --bg-canvas: #161618;
+  --bg-surface: #1d1d20;
+  --bg-elevated: #232327;
+  --bg-code: #111113;
+
+  --gray-100: #26262a;
+  --gray-200: #2b2b30;
+  --gray-300: #333338;
+  --gray-400: #3a3a40;
+  --gray-500: #4d4d55;
+
+  --border-hairline: #29292e;
+  --border-strong: #36363d;
+  --stripe-line: rgba(255, 255, 255, 0.042);
+  --surface-hover: rgba(255, 255, 255, 0.036);
+  --surface-selected: rgba(206, 255, 0, 0.075);
+
+  --text-primary: #ececee;
+  --text-body: #bdbdc5;
+  --text-muted: #94949e;
+  --text-subtle: #74747e;
+
+  /* Electric chartreuse signature accent */
+  --accent-fill: #ceff00;
+  --accent-ink: #111113;
+  --accent-text: #ceff00;
+  --accent-soft: rgba(206, 255, 0, 0.12);
+  --accent-border: rgba(206, 255, 0, 0.44);
+
+  --contrast-bg: #f4f4f6;
+  --contrast-fg: #111113;
+  --contrast-hover: #dcdce0;
+
+  /* Semantic telemetry palette */
+  --status-green: #4ade80;
+  --status-green-soft: rgba(74, 222, 128, 0.12);
+  --status-green-border: rgba(74, 222, 128, 0.35);
+
+  --status-cyan: #38bdf8;
+  --status-cyan-soft: rgba(56, 189, 248, 0.12);
+  --status-cyan-border: rgba(56, 189, 248, 0.35);
+
+  --status-amber: #f5a623;
+  --status-amber-soft: rgba(245, 166, 35, 0.13);
+  --status-amber-border: rgba(245, 166, 35, 0.38);
+
+  --status-red: #f87171;
+  --status-red-soft: rgba(248, 113, 113, 0.13);
+  --status-red-border: rgba(248, 113, 113, 0.38);
+
+  /* Strict low-radius geometry */
+  --radius-none: 0px;
+  --radius-sharp: 2px;
+
+  /* Desktop shell metrics */
+  --titlebar-h: 38px;
+  --statusbar-h: 28px;
+  --sidebar-w: 228px;
+  --viewbar-h: 48px;
+
+  --shadow-float: 0 22px 58px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-rail: #eceae3;
+  --bg-canvas: #f5f4f0;
+  --bg-surface: #ffffff;
+  --bg-elevated: #eae8e1;
+  --bg-code: #eeece5;
+
+  --gray-100: #e6e3db;
+  --gray-200: #dad6cc;
+  --gray-300: #cbc6ba;
+  --gray-400: #b8b2a5;
+  --gray-500: #969083;
+
+  --border-hairline: #d6d2c7;
+  --border-strong: #beb8aa;
+  --stripe-line: rgba(27, 26, 23, 0.042);
+  --surface-hover: rgba(27, 26, 23, 0.038);
+  --surface-selected: rgba(45, 90, 0, 0.075);
+
+  --text-primary: #1b1a17;
+  --text-body: #3c3a34;
+  --text-muted: #625e56;
+  --text-subtle: #7c776e;
+
+  --accent-fill: #ceff00;
+  --accent-ink: #111113;
+  --accent-text: #2d5a00;
+  --accent-soft: rgba(45, 90, 0, 0.1);
+  --accent-border: rgba(45, 90, 0, 0.36);
+
+  --contrast-bg: #1b1a17;
+  --contrast-fg: #ffffff;
+  --contrast-hover: #33312b;
+
+  --status-green: #15803d;
+  --status-green-soft: rgba(21, 128, 61, 0.1);
+  --status-green-border: rgba(21, 128, 61, 0.32);
+
+  --status-cyan: #0369a1;
+  --status-cyan-soft: rgba(3, 105, 161, 0.1);
+  --status-cyan-border: rgba(3, 105, 161, 0.32);
+
+  --status-amber: #b45309;
+  --status-amber-soft: rgba(180, 83, 9, 0.1);
+  --status-amber-border: rgba(180, 83, 9, 0.32);
+
+  --status-red: #b91c1c;
+  --status-red-soft: rgba(185, 28, 28, 0.1);
+  --status-red-border: rgba(185, 28, 28, 0.32);
+
+  --shadow-float: 0 20px 48px rgba(27, 26, 23, 0.16);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+input,
+textarea,
+.selectable-text {
+  user-select: text;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+
+/* Custom ultra-thin desktop scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--gray-300);
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-500);
+}
+
+.font-mono-ui {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.font-pixel-brand {
+  font-family: var(--font-pixel);
+  letter-spacing: 0.08em;
+}
+
+.eyebrow-mono {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
