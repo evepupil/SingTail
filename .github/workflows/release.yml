@@ -1,0 +1,162 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - master
+      - main
+
+jobs:
+  ci:
+    name: CI Gate (Go & Frontend)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.23.0'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install, typecheck, test, and build frontend
+        run: |
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir frontend typecheck
+          pnpm --dir frontend test
+          pnpm --dir frontend build
+
+      - name: Stage frontend dist for go:embed
+        run: |
+          rm -rf cmd/singtail-desktop/frontendDist
+          mkdir -p cmd/singtail-desktop/frontendDist
+          cp -R frontend/dist/. cmd/singtail-desktop/frontendDist/
+
+      - name: Check gofmt
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then
+            echo "Unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Run go vet and unit tests
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - name: Verify Windows amd64 cross-compilation (CGO_ENABLED=0)
+        run: |
+          mkdir -p /tmp/singtail-windows-check
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/singtail-windows-check/ ./cmd/...
+
+  release:
+    name: Windows Release (Portable ZIP & Setup EXE)
+    needs: ci
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.23.0'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Build frontend and embed into desktop binary
+        shell: pwsh
+        run: |
+          pnpm --dir frontend install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm --dir frontend build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force -Path cmd/singtail-desktop/frontendDist | Out-Null
+          Copy-Item -Path frontend/dist/* -Destination cmd/singtail-desktop/frontendDist/ -Recurse -Force
+
+      - name: Build Windows binaries (CGO_ENABLED=0)
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          New-Item -ItemType Directory -Force -Path build/windows/dist | Out-Null
+          go build -trimpath -ldflags="-s -w" -o build/windows/dist/singtail-service.exe ./cmd/singtail-service
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -trimpath -ldflags="-s -w -H windowsgui" -o build/windows/dist/singtail.exe ./cmd/singtail-desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item -Path README.md -Destination build/windows/dist/README.md -Force
+
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $portableDir = "release-artifacts/SingTail-portable"
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+          Copy-Item build/windows/dist/singtail.exe $portableDir/
+          Copy-Item build/windows/dist/singtail-service.exe $portableDir/
+          Copy-Item build/windows/install-service.bat $portableDir/
+          Copy-Item build/windows/uninstall-service.bat $portableDir/
+          Copy-Item README.md $portableDir/
+          Compress-Archive -Path "$portableDir/*" -DestinationPath "release-artifacts/SingTail-windows-amd64-portable.zip" -Force
+
+      - name: Build NSIS installer EXE
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          $outPath = (Resolve-Path "release-artifacts").Path + "\SingTail-windows-amd64-setup.exe"
+          makensis /DPRODUCT_VERSION="$version" /DBIN_DIR="dist" /DOUT_FILE="$outPath" build\windows\installer.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Generate SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          Set-Location release-artifacts
+          $files = @("SingTail-windows-amd64-portable.zip", "SingTail-windows-amd64-setup.exe")
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash -Path $f -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $f"
+          }
+          $lines | Out-File -FilePath SHA256SUMS.txt -Encoding ascii
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release-artifacts/SingTail-windows-amd64-portable.zip
+            release-artifacts/SingTail-windows-amd64-setup.exe
+            release-artifacts/SHA256SUMS.txt

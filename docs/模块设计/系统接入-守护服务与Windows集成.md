@@ -2,7 +2,7 @@
 > - **对应代码**：`internal/daemon/` · `internal/syswin/` · `cmd/singtail-service/`
 > - **所属里程碑**：[M2](../roadmap.md#m2核心业务层多组织与内核编排-系统接入层)
 > - **上游架构**：[架构设计.md](../架构设计.md#2-架构分层表)
-> - **当前状态**：待开发
+> - **当前状态**：已完成
 > - **最近更新**：2026-11-27
 
 # 模块设计：守护服务网关与 Windows 系统集成
@@ -28,7 +28,10 @@
 
 ## 4. 当前实现
 
-待 `M2` 代码实现完成后同步更新。
+- `internal/daemon/server.go`：实现全部 18 个 REST 接口、2 秒流量采样调度、静态前端 SPA 托管、本机回环 `Origin` 校验（显式拦截 `Origin: null` 沙箱请求）及 `POST/PUT` `application/json` 校验。
+- `internal/syswin/`：通过 `_windows.go` 与 `_stub.go` 分离，在纯 Go（`CGO_ENABLED=0`）下实现进程枚举、带 `syscall.EscapeArg` 安全引号转义的 Windows 服务注册管理及 Win32 系统托盘。
+- `cmd/singtail-service/main.go`：支持 `-listen`、`-data-dir`、`-web-dir`、`-install`、`-uninstall` 及 Windows SCM 宿主模式。
+- `internal/daemon/server_test.go` & `internal/syswin/syswin_test.go`：全量单测与竞态测试全部通过。
 
 ## 5. 验证方式
 
