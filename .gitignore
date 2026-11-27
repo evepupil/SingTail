@@ -1,0 +1,8 @@
+node_modules/
+data/
+logs/
+backups/
+*.log
+*.bak*
+profiles.local.json
+.DS_Store

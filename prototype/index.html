@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SingTail — Tailscale 出口分流桌面客户端</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles/tokens.css" />
+  <link rel="stylesheet" href="./styles/desktop.css" />
+</head>
+<body>
+  <div class="desktop-window">
+    <!-- Native Frameless Custom Titlebar -->
+    <header class="window-titlebar">
+      <div class="titlebar-brand">
+        <span class="brand-mark">ST</span>
+        <span class="brand-wordmark font-pixel-brand">SING<span>TAIL</span></span>
+        <span class="tag-sharp" style="height:18px;font-size:10px;">v0.1.0 · WIN64</span>
+      </div>
+
+      <div class="titlebar-center">
+        <button type="button" class="cmdk-trigger" data-action="open-cmdk" data-testid="btn-open-cmdk">
+          <span>⌕ 快速切换出口、搜索规则或命令…</span>
+          <span class="font-mono-ui" style="font-size:10.5px;">Ctrl+K</span>
+        </button>
+      </div>
+
+      <div class="titlebar-right">
+        <div class="titlebar-tool-group">
+          <button id="btn-toggle-tray" type="button" class="btn-hairline btn-sm" data-action="toggle-tray" data-testid="btn-toggle-tray">
+            ◫ 托盘面板
+          </button>
+          <button id="btn-toggle-theme" type="button" class="btn-hairline btn-sm font-mono-ui" data-action="toggle-theme" data-testid="btn-toggle-theme">
+            ◐ 暗色
+          </button>
+        </div>
+
+        <div class="win-controls" aria-label="窗口控制">
+          <button type="button" class="win-ctrl-btn" title="最小化至系统托盘" data-action="win-minimize" aria-label="最小化">
+            <svg width="10" height="10" viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.2"><path d="M1 5h8"/></svg>
+          </button>
+          <button type="button" class="win-ctrl-btn" title="最大化" aria-label="最大化">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.5" y="1.5" width="7" height="7"/></svg>
+          </button>
+          <button type="button" class="win-ctrl-btn is-close" title="隐藏到托盘后台继续运行" data-action="win-minimize" aria-label="关闭窗口">
+            <svg width="10" height="10" viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.2"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Desktop Body: Fixed Left Source-List Rail + Dynamic Workspace -->
+    <div class="window-body">
+      <aside id="sidebar-rail" class="sidebar-rail"></aside>
+      <main id="workspace-main" class="workspace-main"></main>
+    </div>
+
+    <!-- Bottom Telemetry Status Bar -->
+    <footer id="window-statusbar" class="window-statusbar"></footer>
+  </div>
+
+  <!-- Windows System Tray Flyout Preview -->
+  <aside id="tray-flyout" class="tray-flyout" aria-label="系统托盘快捷菜单" hidden></aside>
+
+  <!-- Modal Container -->
+  <div id="modal-backdrop" class="modal-backdrop" hidden></div>
+
+  <!-- Global Command Palette (Ctrl+K) -->
+  <div id="cmdk-backdrop" class="modal-backdrop" hidden></div>
+
+  <!-- Toast Feedback -->
+  <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>
