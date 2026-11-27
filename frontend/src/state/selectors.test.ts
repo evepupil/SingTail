@@ -11,6 +11,7 @@ import {
   formatTrafficGB,
   getActionMeta,
   getActiveExit,
+  getExitIpDisplay,
   getLatencyMeta,
 } from "./selectors";
 
@@ -196,6 +197,33 @@ describe("exit selectors", () => {
     expect(getLatencyMeta(138, true)).toEqual({ text: "138 ms", tagClass: "tag-sharp tag-lime-outline" });
     expect(getLatencyMeta(220, true)).toEqual({ text: "220 ms", tagClass: "tag-sharp tag-amber" });
     expect(getLatencyMeta(40, false)).toEqual({ text: "超时", tagClass: "tag-sharp tag-red" });
+  });
+
+  it("displays tailscaleIp and pending badge when publicIp is empty", () => {
+    const firstExit = SAMPLE_EXITS[0];
+    expect(firstExit).toBeDefined();
+    if (!firstExit) return;
+
+    expect(getExitIpDisplay(undefined)).toEqual({
+      ipText: "—",
+      badgeText: "离线",
+      badgeClass: "tag-sharp tag-red",
+    });
+    expect(getExitIpDisplay({ ...firstExit, publicIp: "" })).toEqual({
+      ipText: "100.123.114.28",
+      badgeText: "待探测",
+      badgeClass: "tag-sharp tag-amber",
+    });
+    expect(getExitIpDisplay(firstExit)).toEqual({
+      ipText: "68.225.41.109",
+      badgeText: "已连通",
+      badgeClass: "tag-sharp tag-green",
+    });
+    expect(getExitIpDisplay({ ...firstExit, online: false })).toEqual({
+      ipText: "68.225.41.109",
+      badgeText: "离线",
+      badgeClass: "tag-sharp tag-red",
+    });
   });
 });
 

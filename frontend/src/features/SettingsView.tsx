@@ -7,7 +7,10 @@ interface SettingsViewProps {
   orgs: readonly Organization[];
   exitNodes: readonly ExitNode[];
   settings: SystemSettings;
+  coreAvailable: boolean;
+  coreVersion?: string;
   onSyncOrg: (orgId: string) => void;
+  onRemoveOrg: (orgId: string) => void;
   onUpdateSettings: (next: SystemSettings) => void;
   onOpenModal: (modal: Exclude<ModalKind, null>) => void;
 }
@@ -16,7 +19,10 @@ export function SettingsView({
   orgs,
   exitNodes,
   settings,
+  coreAvailable,
+  coreVersion,
   onSyncOrg,
+  onRemoveOrg,
   onUpdateSettings,
   onOpenModal,
 }: SettingsViewProps) {
@@ -71,59 +77,77 @@ export function SettingsView({
                 Tailscale 组织 ({orgs.length})
               </span>
             </div>
-            {orgs.map((org) => {
-              const nodeCount = exitNodes.filter(
-                (n) => n.orgId === org.id,
-              ).length;
-              return (
-                <div key={org.id} className="settings-row">
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 10,
-                      minWidth: 0,
-                    }}
-                  >
-                    <span className="status-dot is-green" />
-                    <span
-                      style={{ fontWeight: 600, color: "var(--text-primary)" }}
+            {orgs.length === 0 ? (
+              <div
+                className="settings-row"
+                style={{ color: "var(--text-subtle)" }}
+                data-testid="empty-settings-orgs"
+              >
+                暂无已挂载组织
+              </div>
+            ) : (
+              orgs.map((org) => {
+                const nodeCount = exitNodes.filter(
+                  (n) => n.orgId === org.id,
+                ).length;
+                return (
+                  <div key={org.id} className="settings-row">
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        minWidth: 0,
+                      }}
                     >
-                      {org.name}
-                    </span>
-                    <span
-                      className="font-mono-ui truncate"
-                      style={{ fontSize: 12, color: "var(--text-muted)" }}
+                      <span className="status-dot is-green" />
+                      <span
+                        style={{ fontWeight: 600, color: "var(--text-primary)" }}
+                      >
+                        {org.name}
+                      </span>
+                      <span
+                        className="font-mono-ui truncate"
+                        style={{ fontSize: 12, color: "var(--text-muted)" }}
+                      >
+                        {org.account}
+                      </span>
+                      <span className="tag-sharp">{nodeCount} 节点</span>
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        flexShrink: 0,
+                      }}
                     >
-                      {org.account}
-                    </span>
-                    <span className="tag-sharp">{nodeCount} 节点</span>
+                      <span
+                        className="font-mono-ui"
+                        style={{ fontSize: 11, color: "var(--text-subtle)" }}
+                      >
+                        {org.lastSync}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-hairline btn-sm"
+                        onClick={() => onSyncOrg(org.id)}
+                      >
+                        同步
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-danger btn-sm"
+                        data-testid={`btn-remove-org-${org.id}`}
+                        onClick={() => onRemoveOrg(org.id)}
+                      >
+                        移除
+                      </button>
+                    </div>
                   </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      flexShrink: 0,
-                    }}
-                  >
-                    <span
-                      className="font-mono-ui"
-                      style={{ fontSize: 11, color: "var(--text-subtle)" }}
-                    >
-                      {org.lastSync}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn-hairline btn-sm"
-                      onClick={() => onSyncOrg(org.id)}
-                    >
-                      同步
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </section>
 
           <section className="settings-block">
@@ -193,6 +217,18 @@ export function SettingsView({
                   })
                 }
               />
+            </div>
+
+            <div className="settings-row">
+              <span style={{ fontWeight: 500, color: "var(--text-primary)" }}>
+                sing-box 内核
+              </span>
+              <span
+                className={`tag-sharp ${coreAvailable ? "tag-green" : "tag-red"}`}
+                data-testid="settings-core-status"
+              >
+                {coreAvailable ? coreVersion?.trim() || "已就绪" : "未检测到"}
+              </span>
             </div>
           </section>
         </div>

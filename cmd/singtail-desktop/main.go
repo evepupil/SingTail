@@ -16,14 +16,9 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"os/exec"
-	"os/signal"
-	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 
 	"github.com/singtail/singtail/internal/contract"
@@ -43,7 +38,8 @@ const (
 func main() {
 	listenAddr := flag.String("listen", defaultDaemonAddr, "local daemon address")
 	dataDir := flag.String("data-dir", "", "directory for local state and traffic database")
-	realProbe := flag.Bool("real-probe", false, "enable real HTTP egress probing and provider fetching")
+	demo := flag.Bool("demo", false, "enable demo mock data for UI preview")
+	realProbe := flag.Bool("real-probe", true, "enable real network probing and sing-box runtime")
 	flag.Parse()
 
 	resolvedDataDir := resolveDesktopDataDir(*dataDir)
@@ -56,95 +52,46 @@ func main() {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	uiURL := apiBaseURL
 
 	var httpSrv *http.Server
 	var embeddedDaemon *daemon.Server
+	var apiHandler http.Handler
 
-	online, servesUI := probeLocalDaemon(apiBaseURL)
-	if !online {
-		embeddedDaemon, err = daemon.NewServer(resolvedDataDir, staticFS, *realProbe)
+	if !probeLocalDaemon(apiBaseURL) {
+		embeddedDaemon, err = daemon.NewServerWithOptions(daemon.Options{
+			DataDir:          resolvedDataDir,
+			StaticFS:         staticFS,
+			RealNetworkProbe: *realProbe,
+			DemoMode:         *demo,
+		})
 		if err != nil {
 			log.Fatalf("start embedded daemon: %v", err)
 		}
+		apiHandler = embeddedDaemon
+
 		ln, listenErr := net.Listen("tcp", *listenAddr)
-		if listenErr != nil {
-			_ = embeddedDaemon.Close()
-			log.Fatalf("listen %s: %v", *listenAddr, listenErr)
-		}
-		httpSrv = &http.Server{
-			Addr:              *listenAddr,
-			Handler:           embeddedDaemon,
-			ReadHeaderTimeout: 10 * time.Second,
-		}
-		go func() {
-			if serveErr := httpSrv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-				log.Printf("embedded daemon stopped: %v", serveErr)
+		if listenErr == nil {
+			httpSrv = &http.Server{
+				Addr:              *listenAddr,
+				Handler:           embeddedDaemon,
+				ReadHeaderTimeout: 10 * time.Second,
 			}
-		}()
-	} else if !servesUI {
-		// External headless daemon is online without static UI; host embedded UI on loopback and proxy /api.
-		proxyHandler, proxyErr := buildUIProxyHandler(staticFS, apiBaseURL)
+			go func() {
+				if serveErr := httpSrv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+					log.Printf("embedded daemon stopped: %v", serveErr)
+				}
+			}()
+		}
+	} else {
+		proxyHandler, proxyErr := buildAPIProxyHandler(apiBaseURL)
 		if proxyErr != nil {
-			log.Fatalf("create UI proxy: %v", proxyErr)
+			log.Fatalf("create API proxy: %v", proxyErr)
 		}
-		ln, listenErr := net.Listen("tcp", "127.0.0.1:0")
-		if listenErr != nil {
-			log.Fatalf("listen local UI proxy: %v", listenErr)
-		}
-		uiURL = "http://" + ln.Addr().String()
-		httpSrv = &http.Server{
-			Addr:              ln.Addr().String(),
-			Handler:           proxyHandler,
-			ReadHeaderTimeout: 10 * time.Second,
-		}
-		go func() {
-			if serveErr := httpSrv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-				log.Printf("UI proxy stopped: %v", serveErr)
-			}
-		}()
+		apiHandler = proxyHandler
 	}
 
-	stopCh := make(chan struct{})
-	var stopOnce sync.Once
-	requestStop := func() {
-		stopOnce.Do(func() { close(stopCh) })
-	}
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		select {
-		case <-sigCh:
-			requestStop()
-		case <-stopCh:
-		}
-		signal.Stop(sigCh)
-	}()
-
-	openWindow := func() {
-		if launchErr := openAppWindow(uiURL, resolvedDataDir); launchErr != nil {
-			log.Printf("open desktop window failed: %v", launchErr)
-		}
-	}
-
-	// Launch primary window immediately on startup.
-	openWindow()
-
-	trayCfg := syswin.TrayConfig{
-		Tooltip: "SingTail — 多组织出口网关",
-		OnOpen:  openWindow,
-		OnToggle: func() {
-			if err := toggleTunViaAPI(apiBaseURL); err != nil {
-				log.Printf("toggle routing failed: %v", err)
-			}
-		},
-		OnQuit: requestStop,
-	}
-
-	if trayErr := syswin.RunTray(trayCfg, stopCh); trayErr != nil {
-		log.Printf("system tray exited: %v", trayErr)
-		<-stopCh
+	if runErr := runDesktopWindow(staticFS, apiHandler, apiBaseURL); runErr != nil {
+		log.Printf("desktop window exited: %v", runErr)
 	}
 
 	if httpSrv != nil {
@@ -162,104 +109,80 @@ func resolveDesktopDataDir(raw string) string {
 	if trimmed != "" {
 		return filepath.Clean(trimmed)
 	}
-	if exe, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(exe), "data")
+
+	switch runtime.GOOS {
+	case "windows":
+		if exe, err := os.Executable(); err == nil {
+			exeDir := filepath.Dir(exe)
+			portable := filepath.Join(exeDir, "data")
+			if !isProgramFilesDir(exeDir) && isDirWritable(portable) {
+				return portable
+			}
+		}
+		if localAppData := strings.TrimSpace(os.Getenv("LocalAppData")); localAppData != "" {
+			return filepath.Join(localAppData, "SingTail")
+		}
+		return "./data"
+	case "darwin":
+		if os.Geteuid() == 0 {
+			return "/Library/Application Support/SingTail"
+		}
+		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+			return filepath.Join(home, "Library", "Application Support", "SingTail")
+		}
+		return "./data"
+	default:
+		if os.Geteuid() == 0 {
+			return "/var/lib/singtail"
+		}
+		if cfgDir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(cfgDir) != "" {
+			return filepath.Join(cfgDir, "SingTail")
+		}
+		return "./data"
 	}
-	return "./data"
 }
 
-func probeLocalDaemon(baseURL string) (online bool, servesUI bool) {
-	client := &http.Client{Timeout: probeTimeout}
+func isProgramFilesDir(dir string) bool {
+	lower := strings.ToLower(filepath.Clean(dir))
+	return strings.Contains(lower, `\program files`) || strings.Contains(lower, `/program files`)
+}
 
+func isDirWritable(dir string) bool {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false
+	}
+	probe, err := os.CreateTemp(dir, ".write-check-*")
+	if err != nil {
+		return false
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	return true
+}
+
+func probeLocalDaemon(baseURL string) bool {
+	client := &http.Client{Timeout: probeTimeout}
 	snapResp, err := client.Get(baseURL + "/api/snapshot?period=live")
 	if err != nil {
-		return false, false
+		return false
 	}
 	_ = snapResp.Body.Close()
-	if snapResp.StatusCode != http.StatusOK {
-		return false, false
-	}
-
-	uiResp, err := client.Get(baseURL + "/")
-	if err != nil {
-		return true, false
-	}
-	_ = uiResp.Body.Close()
-	return true, uiResp.StatusCode == http.StatusOK
+	return snapResp.StatusCode == http.StatusOK
 }
 
-func buildUIProxyHandler(staticFS fs.FS, apiBaseURL string) (http.Handler, error) {
+func buildAPIProxyHandler(apiBaseURL string) (http.Handler, error) {
 	target, err := url.Parse(apiBaseURL)
 	if err != nil {
 		return nil, err
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
-
-	mux := http.NewServeMux()
-	mux.Handle("/api/", proxy)
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		cleanPath := path.Clean("/" + r.URL.Path)
-		relPath := strings.TrimPrefix(cleanPath, "/")
-		if relPath != "" && relPath != "index.html" {
-			if info, statErr := fs.Stat(staticFS, relPath); statErr == nil && !info.IsDir() {
-				http.FileServer(http.FS(staticFS)).ServeHTTP(w, r)
-				return
-			}
-		}
-		indexBytes, readErr := fs.ReadFile(staticFS, "index.html")
-		if readErr != nil {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(indexBytes)
-	})
-	return mux, nil
-}
-
-func openAppWindow(targetURL, dataDir string) error {
-	if runtime.GOOS == "windows" {
-		if edgePath, ok := findEdgeExecutable(); ok {
-			profileDir := filepath.Join(dataDir, "edge-app-profile")
-			args := []string{
-				fmt.Sprintf("--app=%s", targetURL),
-				"--window-size=1360,860",
-				fmt.Sprintf("--user-data-dir=%s", profileDir),
-				"--no-first-run",
-				"--no-default-browser-check",
-			}
-			cmd := exec.Command(edgePath, args...)
-			if err := cmd.Start(); err == nil {
-				go func() {
-					_ = cmd.Wait()
-				}()
-				return nil
-			}
-		}
+	origDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		origDirector(req)
+		req.Header.Set("Origin", apiBaseURL)
 	}
-	return syswin.OpenBrowser(targetURL)
-}
-
-func findEdgeExecutable() (string, bool) {
-	if p, err := exec.LookPath("msedge.exe"); err == nil {
-		return p, true
-	}
-	candidates := []string{
-		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Microsoft", "Edge", "Application", "msedge.exe"),
-		filepath.Join(os.Getenv("ProgramFiles"), "Microsoft", "Edge", "Application", "msedge.exe"),
-		filepath.Join(os.Getenv("LocalAppData"), "Microsoft", "Edge", "Application", "msedge.exe"),
-	}
-	for _, c := range candidates {
-		if strings.TrimSpace(c) == "" {
-			continue
-		}
-		if info, err := os.Stat(c); err == nil && !info.IsDir() {
-			return c, true
-		}
-	}
-	return "", false
+	return proxy, nil
 }
 
 func buildClientBaseURL(listenAddr string) (string, error) {
@@ -274,40 +197,127 @@ func buildClientBaseURL(listenAddr string) (string, error) {
 	return "http://" + net.JoinHostPort(host, port), nil
 }
 
-func toggleTunViaAPI(apiBaseURL string) error {
-	client := &http.Client{Timeout: 2 * time.Second}
+func buildLiveTrayActions(apiBaseURL string) []syswin.TrayAction {
+	snap, err := fetchLiveSnapshot(apiBaseURL)
+	if err != nil {
+		return []syswin.TrayAction{
+			{
+				Label: "切换 TUN 开关",
+				OnClick: func() {
+					_ = toggleTunViaAPI(apiBaseURL)
+				},
+			},
+		}
+	}
+
+	tunLabel := "开启 TUN 虚拟网卡"
+	if snap.TunEnabled {
+		tunLabel = "TUN 已开启"
+	}
+	nextTun := !snap.TunEnabled
+
+	actions := []syswin.TrayAction{
+		{
+			Label:   tunLabel,
+			Checked: snap.TunEnabled,
+			OnClick: func() {
+				_ = postJSONViaAPI(apiBaseURL+"/api/tun", contract.SetTunRequest{Enabled: nextTun})
+			},
+		},
+		{Separator: true},
+		{
+			Label:   "模式：规则",
+			Checked: snap.RoutingMode == contract.ModeRule,
+			OnClick: func() {
+				_ = postJSONViaAPI(apiBaseURL+"/api/mode", contract.SetModeRequest{Mode: contract.ModeRule})
+			},
+		},
+		{
+			Label:   "模式：全局",
+			Checked: snap.RoutingMode == contract.ModeGlobal,
+			OnClick: func() {
+				_ = postJSONViaAPI(apiBaseURL+"/api/mode", contract.SetModeRequest{Mode: contract.ModeGlobal})
+			},
+		},
+		{
+			Label:   "模式：直连",
+			Checked: snap.RoutingMode == contract.ModeDirect,
+			OnClick: func() {
+				_ = postJSONViaAPI(apiBaseURL+"/api/mode", contract.SetModeRequest{Mode: contract.ModeDirect})
+			},
+		},
+	}
+
+	if len(snap.ExitNodes) > 0 {
+		actions = append(actions, syswin.TrayAction{Separator: true})
+		for _, node := range snap.ExitNodes {
+			nodeID := node.ID
+			ipText := strings.TrimSpace(node.PublicIP)
+			if ipText == "" || ipText == "-" {
+				ipText = strings.TrimSpace(node.TailscaleIP)
+			}
+			label := "出口：" + node.Label
+			if ipText != "" {
+				label = fmt.Sprintf("出口：%s (%s)", node.Label, ipText)
+			}
+			actions = append(actions, syswin.TrayAction{
+				Label:   label,
+				Checked: nodeID == snap.ActiveExitID,
+				OnClick: func() {
+					_ = postJSONViaAPI(apiBaseURL+"/api/exit/switch", contract.SwitchExitRequest{ExitID: nodeID})
+				},
+			})
+		}
+	}
+
+	return actions
+}
+
+func fetchLiveSnapshot(apiBaseURL string) (contract.DashboardSnapshot, error) {
+	client := &http.Client{Timeout: 800 * time.Millisecond}
 	resp, err := client.Get(apiBaseURL + "/api/snapshot?period=live")
 	if err != nil {
-		return err
+		return contract.DashboardSnapshot{}, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return err
+		return contract.DashboardSnapshot{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET /api/snapshot returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return contract.DashboardSnapshot{}, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	var snap contract.DashboardSnapshot
 	if err := json.Unmarshal(body, &snap); err != nil {
-		return err
+		return contract.DashboardSnapshot{}, err
 	}
+	return snap, nil
+}
 
-	payload, err := json.Marshal(contract.SetTunRequest{Enabled: !snap.TunEnabled})
+func toggleTunViaAPI(apiBaseURL string) error {
+	snap, err := fetchLiveSnapshot(apiBaseURL)
 	if err != nil {
 		return err
 	}
-	postResp, err := client.Post(apiBaseURL+"/api/tun", "application/json", bytes.NewReader(payload))
+	return postJSONViaAPI(apiBaseURL+"/api/tun", contract.SetTunRequest{Enabled: !snap.TunEnabled})
+}
+
+func postJSONViaAPI(endpoint string, body any) error {
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	defer postResp.Body.Close()
-
-	if postResp.StatusCode != http.StatusOK {
-		postBody, _ := io.ReadAll(io.LimitReader(postResp.Body, 1<<20))
-		return fmt.Errorf("POST /api/tun returned HTTP %d: %s", postResp.StatusCode, strings.TrimSpace(string(postBody)))
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("POST %s returned HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
 	return nil
 }

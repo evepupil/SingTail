@@ -11,20 +11,22 @@ import (
 	"strings"
 )
 
-// TrayAction represents a clickable menu entry in the system tray popup menu.
+// TrayAction represents a clickable menu entry or visual separator in the system tray popup menu.
 type TrayAction struct {
-	Label   string
-	Checked bool
-	OnClick func()
+	Label     string
+	Checked   bool
+	Separator bool
+	OnClick   func()
 }
 
 // TrayConfig configures the system tray icon and menu callbacks.
 type TrayConfig struct {
-	Tooltip  string
-	OnOpen   func()
-	OnToggle func()
-	OnQuit   func()
-	Actions  []TrayAction
+	Tooltip      string
+	OnOpen       func()
+	OnToggle     func()
+	OnQuit       func()
+	Actions      []TrayAction
+	BuildActions func() []TrayAction
 }
 
 // OpenBrowser opens an http or https URL using the host operating system's default browser.

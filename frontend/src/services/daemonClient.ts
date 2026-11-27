@@ -1,5 +1,6 @@
 import type {
   DashboardSnapshot,
+  OrgLoginSession,
   RoutingMode,
   RuleAction,
   RuleType,
@@ -26,6 +27,16 @@ export interface AddOrgPayload {
   nodeHostname: string;
   publicIp: string;
   region: string;
+}
+
+export interface StartOrgLoginPayload {
+  alias: string;
+  controlUrl?: string;
+}
+
+export interface ImportOrgStateDirPayload {
+  sourceDir: string;
+  alias?: string;
 }
 
 export interface QuickRulePayload {
@@ -175,6 +186,37 @@ export const daemonClient = {
     });
   },
 
+  startOrgLogin(req: StartOrgLoginPayload): Promise<OrgLoginSession> {
+    return requestJson<OrgLoginSession>("/api/orgs/login/start", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  },
+
+  pollOrgLogin(sessionId: string): Promise<OrgLoginSession> {
+    return requestJson<OrgLoginSession>(
+      `/api/orgs/login/poll?sessionId=${encodeURIComponent(sessionId)}`,
+    );
+  },
+
+  importOrgStateDir(
+    req: ImportOrgStateDirPayload,
+  ): Promise<DashboardSnapshot> {
+    return requestJson<DashboardSnapshot>("/api/orgs/import-dir", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  },
+
+  removeOrg(orgId: string): Promise<DashboardSnapshot> {
+    return requestJson<DashboardSnapshot>(
+      `/api/orgs?id=${encodeURIComponent(orgId)}`,
+      {
+        method: "DELETE",
+      },
+    );
+  },
+
   syncOrg(orgId: string): Promise<DashboardSnapshot> {
     return requestJson<DashboardSnapshot>("/api/orgs/sync", {
       method: "POST",
@@ -191,5 +233,12 @@ export const daemonClient = {
 
   exportConfig(): Promise<SanitizedExport> {
     return requestJson<SanitizedExport>("/api/export");
+  },
+
+  openExternalUrl(url: string): Promise<{ ok: boolean }> {
+    return requestJson<{ ok: boolean }>("/api/browser/open", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    });
   },
 };

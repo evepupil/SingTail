@@ -19,6 +19,17 @@
   background: var(--bg-rail);
   border-bottom: 1px solid var(--border-hairline);
   gap: 12px;
+  --wails-draggable: drag;
+  -webkit-app-region: drag;
+}
+
+.window-titlebar button,
+.window-titlebar input,
+.window-titlebar a,
+.cmdk-trigger,
+.titlebar-right {
+  --wails-draggable: no-drag;
+  -webkit-app-region: no-drag;
 }
 
 .titlebar-brand {
@@ -34,12 +45,7 @@
   justify-content: center;
   width: 20px;
   height: 20px;
-  background: var(--accent-fill);
-  color: var(--accent-ink);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 700;
-  border-radius: var(--radius-sharp);
+  flex-shrink: 0;
 }
 
 .brand-wordmark {

@@ -61,6 +61,41 @@ export function getActiveExit(
   return exitNodes.find((n) => n.id === activeExitId) ?? exitNodes[0];
 }
 
+export function getExitIpDisplay(exitNode: ExitNode | undefined): {
+  ipText: string;
+  badgeText: string;
+  badgeClass: string;
+} {
+  if (!exitNode) {
+    return {
+      ipText: "—",
+      badgeText: "离线",
+      badgeClass: "tag-sharp tag-red",
+    };
+  }
+  const publicIp = exitNode.publicIp.trim();
+  const hasPublicIp = publicIp !== "" && publicIp !== "-";
+  if (!hasPublicIp) {
+    return {
+      ipText: exitNode.tailscaleIp.trim() || "—",
+      badgeText: "待探测",
+      badgeClass: "tag-sharp tag-amber",
+    };
+  }
+  if (!exitNode.online) {
+    return {
+      ipText: publicIp,
+      badgeText: "离线",
+      badgeClass: "tag-sharp tag-red",
+    };
+  }
+  return {
+    ipText: publicIp,
+    badgeText: "已连通",
+    badgeClass: "tag-sharp tag-green",
+  };
+}
+
 export function filterExitNodesByOrg(
   exitNodes: readonly ExitNode[],
   orgFilter: string,
@@ -188,12 +223,16 @@ export function buildCmdkItems(
   const items: CmdkItem[] = [
     ...exitNodes
       .filter((n) => n.healthy)
-      .map((n) => ({
-        kind: "出口" as const,
-        label: `${n.label} (${n.publicIp})`,
-        sub: n.orgName,
-        cmd: `exit:${n.id}`,
-      })),
+      .map((n) => {
+        const displayIp =
+          n.publicIp && n.publicIp !== "-" ? n.publicIp : n.tailscaleIp;
+        return {
+          kind: "出口" as const,
+          label: displayIp ? `${n.label} (${displayIp})` : n.label,
+          sub: n.orgName,
+          cmd: `exit:${n.id}`,
+        };
+      }),
     { kind: "视图", label: "总览与出口", sub: "", cmd: "view:overview" },
     { kind: "视图", label: "分流规则", sub: "", cmd: "view:rules" },
     { kind: "视图", label: "规则集", sub: "", cmd: "view:providers" },

@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { BrandMark } from "./components/BrandMark";
 import { CmdkPalette } from "./components/CmdkPalette";
 import { Modals } from "./components/Modals";
 import { SharpSwitch } from "./components/SharpSwitch";
-import { TrayFlyout } from "./components/TrayFlyout";
 import { ConnectionsView } from "./features/ConnectionsView";
 import { OverviewView } from "./features/OverviewView";
 import { ProvidersView } from "./features/ProvidersView";
 import { RulesView } from "./features/RulesView";
 import { SettingsView } from "./features/SettingsView";
 import {
-  type AddOrgPayload,
   type AddProviderPayload,
   type AddRulePayload,
+  type ImportOrgStateDirPayload,
+  type StartOrgLoginPayload,
   daemonClient,
 } from "./services/daemonClient";
 import {
@@ -21,6 +22,7 @@ import {
 } from "./state/selectors";
 import type {
   DashboardSnapshot,
+  OrgLoginSession,
   RoutingMode,
   RuleAction,
   SanitizedExport,
@@ -32,6 +34,8 @@ interface WailsRuntime {
   WindowMinimise?: () => void;
   WindowToggleMaximise?: () => void;
   WindowHide?: () => void;
+  Hide?: () => void;
+  BrowserOpenURL?: (url: string) => void;
 }
 
 interface ToastState {
@@ -70,7 +74,6 @@ export function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ViewId>("overview");
   const [trafficPeriod, setTrafficPeriod] = useState<TrafficPeriodKey>("live");
-  const [trayOpen, setTrayOpen] = useState(false);
   const [cmdkOpen, setCmdkOpen] = useState(false);
   const [activeModal, setActiveModal] = useState<ModalKind>(null);
   const [connPaused, setConnPaused] = useState(false);
@@ -200,7 +203,6 @@ export function App() {
       } else if (e.key === "Escape") {
         setCmdkOpen(false);
         setActiveModal(null);
-        setTrayOpen(false);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -320,7 +322,15 @@ export function App() {
       } else {
         const current = getActiveExit(data.exitNodes, data.activeExitId);
         if (current) {
-          showToast(`已切换至 ${current.label} (${current.publicIp})`);
+          const displayIp =
+            current.publicIp && current.publicIp !== "-"
+              ? current.publicIp
+              : current.tailscaleIp;
+          showToast(
+            displayIp
+              ? `已切换至 ${current.label} (${displayIp})`
+              : `已切换至 ${current.label}`,
+          );
         }
       }
     },
@@ -422,20 +432,48 @@ export function App() {
     [runMutation],
   );
 
-  const handleAddOrg = useCallback(
-    async (payload: AddOrgPayload): Promise<boolean> => {
-      const data = await runMutation(
-        () => daemonClient.addOrg(payload),
-        `已挂载组织：${payload.name}`,
-      );
-      return data !== null;
+  const handleStartOrgLogin = useCallback(
+    (payload: StartOrgLoginPayload): Promise<OrgLoginSession> => {
+      return daemonClient.startOrgLogin(payload);
     },
-    [runMutation],
+    [],
+  );
+
+  const handlePollOrgLogin = useCallback(
+    (sessionId: string): Promise<OrgLoginSession> => {
+      return daemonClient.pollOrgLogin(sessionId);
+    },
+    [],
+  );
+
+  const handleOrgAuthenticated = useCallback(async () => {
+    await loadSnapshot(periodRef.current);
+  }, [loadSnapshot]);
+
+  const handleImportOrgDir = useCallback(
+    async (payload: ImportOrgStateDirPayload): Promise<boolean> => {
+      const data = await daemonClient.importOrgStateDir(payload);
+      mergeSnapshot(data, true);
+      const activePeriod = periodRef.current;
+      if (data.traffic.period !== activePeriod) {
+        void loadSnapshot(activePeriod);
+      }
+      showToast("已导入组织并同步节点");
+      return true;
+    },
+    [mergeSnapshot, loadSnapshot, showToast],
   );
 
   const handleSyncOrg = useCallback(
     (orgId: string) => {
       void runMutation(() => daemonClient.syncOrg(orgId), "已同步");
+    },
+    [runMutation],
+  );
+
+  const handleRemoveOrg = useCallback(
+    (orgId: string) => {
+      void runMutation(() => daemonClient.removeOrg(orgId), "已移除组织");
     },
     [runMutation],
   );
@@ -451,13 +489,23 @@ export function App() {
     return daemonClient.exportConfig();
   }, []);
 
-  const handleWindowMinimize = () => {
-    const rt = getWailsRuntime();
-    if (rt?.WindowMinimise) {
-      rt.WindowMinimise();
-    } else {
-      setTrayOpen((prev) => !prev);
+  const handleOpenExternalUrl = useCallback((url: string) => {
+    const trimmed = url.trim();
+    if (!trimmed) {
+      return;
     }
+    const rt = getWailsRuntime();
+    if (rt?.BrowserOpenURL) {
+      rt.BrowserOpenURL(trimmed);
+      return;
+    }
+    void daemonClient.openExternalUrl(trimmed).catch(() => {
+      window.open(trimmed, "_blank", "noopener,noreferrer");
+    });
+  }, []);
+
+  const handleWindowMinimize = () => {
+    getWailsRuntime()?.WindowMinimise?.();
   };
 
   const handleWindowMaximize = () => {
@@ -469,21 +517,13 @@ export function App() {
     if (rt?.WindowHide) {
       rt.WindowHide();
     } else {
-      setTrayOpen((prev) => !prev);
+      rt?.Hide?.();
     }
   };
 
   const activeExit = snapshot
     ? getActiveExit(snapshot.exitNodes, snapshot.activeExitId)
     : undefined;
-  const downNow =
-    snapshot && snapshot.tunEnabled
-      ? (snapshot.traffic.liveDownHistory.at(-1) ?? 0)
-      : 0;
-  const upNow =
-    snapshot && snapshot.tunEnabled
-      ? (snapshot.traffic.liveUpHistory.at(-1) ?? 0)
-      : 0;
 
   const navItems: ReadonlyArray<{
     id: ViewId;
@@ -588,9 +628,17 @@ export function App() {
   return (
     <>
       <div className="desktop-window">
-        <header className="window-titlebar">
+        <header
+          className="window-titlebar"
+          onDoubleClick={(e) => {
+            if ((e.target as HTMLElement).closest("button, input, a")) {
+              return;
+            }
+            handleWindowMaximize();
+          }}
+        >
           <div className="titlebar-brand">
-            <span className="brand-mark">ST</span>
+            <BrandMark />
             <span className="brand-wordmark font-pixel-brand">
               SING<span>TAIL</span>
             </span>
@@ -612,15 +660,6 @@ export function App() {
 
           <div className="titlebar-right">
             <div className="titlebar-tool-group">
-              <button
-                id="btn-toggle-tray"
-                type="button"
-                className={`btn-hairline btn-sm${trayOpen ? " is-active" : ""}`}
-                data-testid="btn-toggle-tray"
-                onClick={() => setTrayOpen((prev) => !prev)}
-              >
-                ◫ 托盘
-              </button>
               <button
                 id="btn-toggle-theme"
                 type="button"
@@ -758,7 +797,11 @@ export function App() {
                   className="font-mono-ui truncate"
                   style={{ fontSize: 11, color: "var(--text-muted)" }}
                 >
-                  {activeExit?.publicIp ?? "—"}
+                  {activeExit
+                    ? (activeExit.publicIp && activeExit.publicIp !== "-"
+                        ? activeExit.publicIp
+                        : activeExit.tailscaleIp) || "—"
+                    : "—"}
                 </div>
               </div>
             </div>
@@ -800,6 +843,7 @@ export function App() {
               <OverviewView
                 theme={theme}
                 tunEnabled={snapshot.tunEnabled}
+                coreAvailable={snapshot.coreAvailable}
                 activeExitId={snapshot.activeExitId}
                 verifyingExitId={snapshot.verifyingExitId}
                 bannerNotice={snapshot.bannerNotice}
@@ -844,7 +888,10 @@ export function App() {
                 orgs={snapshot.orgs}
                 exitNodes={snapshot.exitNodes}
                 settings={snapshot.settings}
+                coreAvailable={snapshot.coreAvailable}
+                coreVersion={snapshot.coreVersion}
                 onSyncOrg={handleSyncOrg}
+                onRemoveOrg={handleRemoveOrg}
                 onUpdateSettings={handleUpdateSettings}
                 onOpenModal={setActiveModal}
               />
@@ -853,26 +900,17 @@ export function App() {
         </div>
       </div>
 
-      <TrayFlyout
-        open={trayOpen}
-        tunEnabled={Boolean(snapshot?.tunEnabled)}
-        routingMode={snapshot?.routingMode ?? "rule"}
-        activeExit={activeExit}
-        exitNodes={snapshot?.exitNodes ?? []}
-        downNow={downNow}
-        upNow={upNow}
-        onToggleTun={handleToggleTun}
-        onSetMode={handleSetMode}
-        onSwitchExit={(id) => void handleSwitchExit(id)}
-      />
-
       <Modals
         activeModal={activeModal}
         runningApps={snapshot?.runningApps ?? []}
         onClose={() => setActiveModal(null)}
         onAddRule={handleAddRule}
         onImportRules={handleImportRules}
-        onAddOrg={handleAddOrg}
+        onStartOrgLogin={handleStartOrgLogin}
+        onPollOrgLogin={handlePollOrgLogin}
+        onImportOrgDir={handleImportOrgDir}
+        onOrgAuthenticated={handleOrgAuthenticated}
+        onOpenExternalUrl={handleOpenExternalUrl}
         onAddProvider={handleAddProvider}
         onFetchExport={handleFetchExport}
         onToast={showToast}

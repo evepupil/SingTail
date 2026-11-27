@@ -1,16 +1,26 @@
-import { type ChangeEvent, type FormEvent, useEffect, useState } from "react";
+import {
+  type ChangeEvent,
+  type FormEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type {
-  AddOrgPayload,
   AddProviderPayload,
   AddRulePayload,
+  ImportOrgStateDirPayload,
+  StartOrgLoginPayload,
 } from "../services/daemonClient";
 import type { ModalKind } from "../state/selectors";
 import type {
+  OrgLoginSession,
   RuleAction,
   RuleType,
   RunningApp,
   SanitizedExport,
 } from "../types/contract";
+
+type AddOrgTab = "login" | "import-dir";
 
 const SAMPLE_IMPORT_RULES_TEXT = `DOMAIN-SUFFIX,anthropic.com,EXIT
 DOMAIN-SUFFIX,steamcontent.com,DIRECT
@@ -24,7 +34,11 @@ interface ModalsProps {
   onClose: () => void;
   onAddRule: (payload: AddRulePayload) => Promise<boolean>;
   onImportRules: (rawText: string) => Promise<boolean>;
-  onAddOrg: (payload: AddOrgPayload) => Promise<boolean>;
+  onStartOrgLogin: (payload: StartOrgLoginPayload) => Promise<OrgLoginSession>;
+  onPollOrgLogin: (sessionId: string) => Promise<OrgLoginSession>;
+  onImportOrgDir: (payload: ImportOrgStateDirPayload) => Promise<boolean>;
+  onOrgAuthenticated: () => Promise<void>;
+  onOpenExternalUrl: (url: string) => void;
   onAddProvider: (payload: AddProviderPayload) => Promise<boolean>;
   onFetchExport: () => Promise<SanitizedExport>;
   onToast: (message: string, isError?: boolean) => void;
@@ -36,7 +50,11 @@ export function Modals({
   onClose,
   onAddRule,
   onImportRules,
-  onAddOrg,
+  onStartOrgLogin,
+  onPollOrgLogin,
+  onImportOrgDir,
+  onOrgAuthenticated,
+  onOpenExternalUrl,
   onAddProvider,
   onFetchExport,
   onToast,
@@ -51,12 +69,20 @@ export function Modals({
   // Import Rules state
   const [importText, setImportText] = useState(SAMPLE_IMPORT_RULES_TEXT);
 
-  // Add Org state
-  const [orgName, setOrgName] = useState("EU Lab Tailnet");
-  const [orgAccount, setOrgAccount] = useState("infra@eulab.dev");
-  const [orgNode, setOrgNode] = useState("eu-fra-exit-01");
-  const [orgIp, setOrgIp] = useState("88.198.44.102");
-  const [orgRegion, setOrgRegion] = useState("DE · 法兰克福");
+  // Add Org state (zero-input default; advanced options collapsed)
+  const [orgAdvancedOpen, setOrgAdvancedOpen] = useState(false);
+  const [orgTab, setOrgTab] = useState<AddOrgTab>("login");
+  const [orgAlias, setOrgAlias] = useState("");
+  const [orgControlUrl, setOrgControlUrl] = useState("");
+  const [loginSession, setLoginSession] = useState<OrgLoginSession | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [importSourceDir, setImportSourceDir] = useState("");
+  const [importAlias, setImportAlias] = useState("");
+  const [importDirError, setImportDirError] = useState<string | null>(null);
+
+  const openedAuthUrlRef = useRef("");
+  const isAddOrgOpenRef = useRef(false);
+  isAddOrgOpenRef.current = activeModal === "add-org";
 
   // Add Provider state
   const [provTag, setProvTag] = useState("dustinwin-ai");
@@ -78,6 +104,17 @@ export function Modals({
       setRulePayload("");
     } else if (activeModal === "import-rules") {
       setImportText(SAMPLE_IMPORT_RULES_TEXT);
+    } else if (activeModal === "add-org") {
+      setOrgAdvancedOpen(false);
+      setOrgTab("login");
+      setOrgAlias("");
+      setOrgControlUrl("");
+      setLoginSession(null);
+      setLoginError(null);
+      setImportSourceDir("");
+      setImportAlias("");
+      setImportDirError(null);
+      openedAuthUrlRef.current = "";
     } else if (activeModal === "export-config") {
       let cancelled = false;
       setExportLoading(true);
@@ -109,6 +146,82 @@ export function Modals({
     }
     return undefined;
   }, [activeModal, onFetchExport, onToast]);
+
+  // Poll Tailscale web authorization session every 1.5s while modal & login tab remain open
+  useEffect(() => {
+    if (
+      activeModal !== "add-org" ||
+      orgTab !== "login" ||
+      !loginSession ||
+      (loginSession.state !== "starting" && loginSession.state !== "auth_url")
+    ) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+    const sessionId = loginSession.sessionId;
+
+    const timer = window.setInterval(() => {
+      if (cancelled || inFlight) {
+        return;
+      }
+      inFlight = true;
+      void onPollOrgLogin(sessionId)
+        .then(async (res) => {
+          if (cancelled) {
+            return;
+          }
+          if (res.authUrl && openedAuthUrlRef.current !== res.authUrl) {
+            openedAuthUrlRef.current = res.authUrl;
+            onOpenExternalUrl(res.authUrl);
+          }
+          setLoginSession(res);
+          if (res.state === "authenticated") {
+            window.clearInterval(timer);
+            await onOrgAuthenticated();
+            if (cancelled) {
+              return;
+            }
+            onToast(
+              `已挂载 ${res.orgName || "Tailscale 组织"}（发现 ${res.nodeCount ?? 0} 个出口节点）`,
+            );
+            onClose();
+          } else if (res.state === "error") {
+            window.clearInterval(timer);
+            setLoginError(res.error || "授权失败，请重试");
+          }
+        })
+        .catch((err: unknown) => {
+          if (cancelled) {
+            return;
+          }
+          window.clearInterval(timer);
+          const msg = err instanceof Error ? err.message : "轮询授权状态失败";
+          setLoginError(msg);
+          setLoginSession((prev) =>
+            prev ? { ...prev, state: "error", error: msg } : null,
+          );
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    }, 1500);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    activeModal,
+    orgTab,
+    loginSession,
+    onPollOrgLogin,
+    onOrgAuthenticated,
+    onOpenExternalUrl,
+    onToast,
+    onClose,
+  ]);
 
   const handleRuleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -175,23 +288,86 @@ export function Modals({
     }
   };
 
-  const handleOrgSubmit = async (e: FormEvent) => {
+  const handleStartOrgLogin = async (e: FormEvent) => {
     e.preventDefault();
-    if (!orgName.trim() || !orgAccount.trim() || submitting) {
+    if (submitting) {
       return;
     }
     setSubmitting(true);
+    setLoginError(null);
+    setLoginSession(null);
+    openedAuthUrlRef.current = "";
     try {
-      const ok = await onAddOrg({
-        name: orgName.trim(),
-        account: orgAccount.trim(),
-        nodeHostname: orgNode.trim(),
-        publicIp: orgIp.trim(),
-        region: orgRegion.trim(),
+      const cleanAlias = orgAlias.trim();
+      const cleanControlUrl = orgControlUrl.trim();
+      const res = await onStartOrgLogin({
+        alias: cleanAlias,
+        ...(cleanControlUrl ? { controlUrl: cleanControlUrl } : {}),
+      });
+      if (!isAddOrgOpenRef.current) {
+        return;
+      }
+      if (res.authUrl && openedAuthUrlRef.current !== res.authUrl) {
+        openedAuthUrlRef.current = res.authUrl;
+        onOpenExternalUrl(res.authUrl);
+      }
+      if (res.state === "authenticated") {
+        await onOrgAuthenticated();
+        if (!isAddOrgOpenRef.current) {
+          return;
+        }
+        onToast(
+          `已挂载 ${res.orgName || "Tailscale 组织"}（发现 ${res.nodeCount ?? 0} 个出口节点）`,
+        );
+        onClose();
+        return;
+      }
+      if (res.state === "error") {
+        setLoginError(res.error || "获取授权链接失败");
+      }
+      setLoginSession(res);
+    } catch (err: unknown) {
+      if (!isAddOrgOpenRef.current) {
+        return;
+      }
+      setLoginError(err instanceof Error ? err.message : "获取授权链接失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCopyAuthUrl = async () => {
+    const url = loginSession?.authUrl;
+    if (!url) {
+      return;
+    }
+    try {
+      await navigator.clipboard?.writeText(url);
+      onToast("已复制授权链接");
+    } catch {
+      onToast("复制失败", true);
+    }
+  };
+
+  const handleImportOrgDirSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    const sourceDir = importSourceDir.trim();
+    if (!sourceDir || submitting) {
+      return;
+    }
+    setSubmitting(true);
+    setImportDirError(null);
+    try {
+      const cleanAlias = importAlias.trim();
+      const ok = await onImportOrgDir({
+        sourceDir,
+        ...(cleanAlias ? { alias: cleanAlias } : {}),
       });
       if (ok) {
         onClose();
       }
+    } catch (err: unknown) {
+      setImportDirError(err instanceof Error ? err.message : "导入失败");
     } finally {
       setSubmitting(false);
     }
@@ -436,92 +612,298 @@ export function Modals({
               ESC
             </button>
           </div>
-          <form className="modal-body" onSubmit={handleOrgSubmit}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 10 }}>
-              <div className="form-field">
-                <label className="form-label" htmlFor="org-name-inp">
-                  组织名称
-                </label>
-                <input
-                  id="org-name-inp"
-                  name="name"
-                  type="text"
-                  required
-                  className="input-sharp"
-                  value={orgName}
-                  onChange={(e) => setOrgName(e.target.value)}
-                />
-              </div>
-              <div className="form-field">
-                <label className="form-label" htmlFor="org-acc-inp">
-                  账号
-                </label>
-                <input
-                  id="org-acc-inp"
-                  name="account"
-                  type="text"
-                  required
-                  className="input-sharp font-mono-ui"
-                  value={orgAccount}
-                  onChange={(e) => setOrgAccount(e.target.value)}
-                />
-              </div>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 10 }}>
-              <div className="form-field">
-                <label className="form-label" htmlFor="org-node-inp">
-                  出口主机名
-                </label>
-                <input
-                  id="org-node-inp"
-                  name="nodeHostname"
-                  type="text"
-                  className="input-sharp font-mono-ui"
-                  value={orgNode}
-                  onChange={(e) => setOrgNode(e.target.value)}
-                />
-              </div>
-              <div className="form-field">
-                <label className="form-label" htmlFor="org-ip-inp">
-                  公网 IP
-                </label>
-                <input
-                  id="org-ip-inp"
-                  name="publicIp"
-                  type="text"
-                  className="input-sharp font-mono-ui"
-                  value={orgIp}
-                  onChange={(e) => setOrgIp(e.target.value)}
-                />
-              </div>
-              <div className="form-field">
-                <label className="form-label" htmlFor="org-reg-inp">
-                  区域
-                </label>
-                <input
-                  id="org-reg-inp"
-                  name="region"
-                  type="text"
-                  className="input-sharp"
-                  value={orgRegion}
-                  onChange={(e) => setOrgRegion(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="modal-foot" style={{ margin: "4px -16px -16px" }}>
-              <button type="button" className="btn-hairline" onClick={onClose}>
-                取消
-              </button>
-              <button
-                type="submit"
-                className="btn-lime"
-                disabled={submitting}
-                data-testid="btn-confirm-add-org"
+
+          {orgAdvancedOpen && (
+            <div
+              style={{
+                padding: "10px 16px 0",
+                borderBottom: "1px solid var(--border-hairline)",
+                background: "var(--bg-surface)",
+              }}
+            >
+              <div
+                className="seg-tabs"
+                role="tablist"
+                aria-label="挂载方式"
+                style={{ marginBottom: 10 }}
               >
-                登录授权
-              </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={orgTab === "login"}
+                  className={`seg-tab ${orgTab === "login" ? "is-active" : ""}`}
+                  data-testid="tab-org-login"
+                  onClick={() => {
+                    setOrgTab("login");
+                    setImportDirError(null);
+                  }}
+                >
+                  网页授权登录
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={orgTab === "import-dir"}
+                  className={`seg-tab ${orgTab === "import-dir" ? "is-active" : ""}`}
+                  data-testid="tab-org-import-dir"
+                  onClick={() => {
+                    setOrgTab("import-dir");
+                    setLoginSession(null);
+                    setLoginError(null);
+                  }}
+                >
+                  导入已有凭据目录
+                </button>
+              </div>
             </div>
-          </form>
+          )}
+
+          {!orgAdvancedOpen || orgTab === "login" ? (
+            <form className="modal-body" onSubmit={handleStartOrgLogin}>
+              <div
+                style={{
+                  padding: "10px 12px",
+                  border: "1px solid var(--border-hairline)",
+                  background: "var(--bg-code)",
+                  fontSize: 12.5,
+                  color: "var(--text-body)",
+                  lineHeight: 1.55,
+                }}
+              >
+                在系统浏览器点击确认授权后，自动拉取组织名称、账号、全部出口节点并自动探测出口公网 IP。
+              </div>
+
+              {orgAdvancedOpen && (
+                <>
+                  <div className="form-field">
+                    <label className="form-label" htmlFor="org-alias-inp">
+                      组织备注名（选填）
+                    </label>
+                    <input
+                      id="org-alias-inp"
+                      name="alias"
+                      type="text"
+                      className="input-sharp"
+                      placeholder="留空自动读取 Tailscale 组织名"
+                      value={orgAlias}
+                      onChange={(e) => setOrgAlias(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="form-field">
+                    <label className="form-label" htmlFor="org-control-url-inp">
+                      Headscale 控制地址（选填）
+                    </label>
+                    <input
+                      id="org-control-url-inp"
+                      name="controlUrl"
+                      type="text"
+                      className="input-sharp font-mono-ui"
+                      placeholder="留空使用官方 login.tailscale.com"
+                      value={orgControlUrl}
+                      onChange={(e) => setOrgControlUrl(e.target.value)}
+                    />
+                  </div>
+                </>
+              )}
+
+              {loginError && (
+                <div
+                  className="inline-banner is-rollback"
+                  role="alert"
+                  data-testid="org-login-error"
+                  style={{ border: "1px solid var(--status-red-border)" }}
+                >
+                  <span>{loginError}</span>
+                </div>
+              )}
+
+              {loginSession &&
+                (loginSession.state === "starting" ||
+                  loginSession.state === "auth_url") && (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 8,
+                      padding: 10,
+                      border: "1px solid var(--border-hairline)",
+                      background: "var(--bg-code)",
+                    }}
+                    data-testid="org-login-polling-box"
+                  >
+                    {loginSession.authUrl ? (
+                      <>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 8,
+                          }}
+                        >
+                          <span className="form-label">授权链接</span>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button
+                              type="button"
+                              className="btn-hairline btn-sm"
+                              onClick={() =>
+                                onOpenExternalUrl(loginSession.authUrl ?? "")
+                              }
+                            >
+                              打开浏览器
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-hairline btn-sm"
+                              data-testid="btn-copy-auth-url"
+                              onClick={() => void handleCopyAuthUrl()}
+                            >
+                              复制链接
+                            </button>
+                          </div>
+                        </div>
+                        <div
+                          className="font-mono-ui selectable-text"
+                          data-testid="org-auth-url"
+                          style={{
+                            padding: "8px 10px",
+                            border: "1px solid var(--border-hairline)",
+                            background: "var(--bg-surface)",
+                            color: "var(--accent-text)",
+                            fontSize: 11.5,
+                            wordBreak: "break-all",
+                          }}
+                        >
+                          {loginSession.authUrl}
+                        </div>
+                        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                          请在浏览器完成确认，正在自动同步节点与公网 IP…
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                        正在拉起 Tailscale 授权页…
+                      </div>
+                    )}
+                  </div>
+                )}
+
+              <div
+                className="modal-foot"
+                style={{
+                  margin: "4px -16px -16px",
+                  justifyContent: "space-between",
+                }}
+              >
+                <button
+                  type="button"
+                  className="btn-hairline btn-sm"
+                  data-testid="btn-toggle-org-advanced"
+                  onClick={() => setOrgAdvancedOpen((prev) => !prev)}
+                >
+                  {orgAdvancedOpen ? "收起高级选项" : "高级选项"}
+                </button>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="button" className="btn-hairline" onClick={onClose}>
+                    取消
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn-lime"
+                    disabled={
+                      submitting ||
+                      loginSession?.state === "starting" ||
+                      loginSession?.state === "auth_url"
+                    }
+                    data-testid="btn-confirm-add-org"
+                  >
+                    {submitting
+                      ? "正在连接…"
+                      : loginSession?.state === "starting" ||
+                          loginSession?.state === "auth_url"
+                        ? "等待浏览器授权…"
+                        : "打开浏览器登录 Tailscale 授权"}
+                  </button>
+                </div>
+              </div>
+            </form>
+          ) : (
+            <form className="modal-body" onSubmit={handleImportOrgDirSubmit}>
+              <div className="form-field">
+                <label className="form-label" htmlFor="org-source-dir-inp">
+                  凭据目录路径
+                </label>
+                <input
+                  id="org-source-dir-inp"
+                  name="sourceDir"
+                  type="text"
+                  required
+                  className="input-sharp font-mono-ui"
+                  placeholder="C:\sing-box\data\ts-state-desktop 或 ~/sing-box/data/ts-state"
+                  value={importSourceDir}
+                  onChange={(e) => setImportSourceDir(e.target.value)}
+                />
+              </div>
+
+              <div className="form-field">
+                <label className="form-label" htmlFor="org-import-alias-inp">
+                  组织备注名（选填）
+                </label>
+                <input
+                  id="org-import-alias-inp"
+                  name="importAlias"
+                  type="text"
+                  className="input-sharp"
+                  placeholder="留空自动读取 Tailscale 组织名"
+                  value={importAlias}
+                  onChange={(e) => setImportAlias(e.target.value)}
+                />
+              </div>
+
+              {importDirError && (
+                <div
+                  className="inline-banner is-rollback"
+                  role="alert"
+                  style={{ border: "1px solid var(--status-red-border)" }}
+                >
+                  <span>{importDirError}</span>
+                </div>
+              )}
+
+              <div
+                className="modal-foot"
+                style={{
+                  margin: "4px -16px -16px",
+                  justifyContent: "space-between",
+                }}
+              >
+                <button
+                  type="button"
+                  className="btn-hairline btn-sm"
+                  onClick={() => {
+                    setOrgAdvancedOpen(false);
+                    setOrgTab("login");
+                  }}
+                >
+                  收起高级选项
+                </button>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="button" className="btn-hairline" onClick={onClose}>
+                    取消
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn-lime"
+                    disabled={submitting || !importSourceDir.trim()}
+                    data-testid="btn-confirm-import-org-dir"
+                  >
+                    {submitting ? "导入中…" : "导入并同步节点"}
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
         </div>
       )}
 

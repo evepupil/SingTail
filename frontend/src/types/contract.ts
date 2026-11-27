@@ -17,6 +17,7 @@ export interface Organization {
   name: string;
   account: string;
   localTailscaleIp: string;
+  controlUrl?: string;
   stateDir?: string;
   lastSync: string;
 }
@@ -34,6 +35,15 @@ export interface ExitNode {
   latencyMs: number;
   online: boolean;
   healthy: boolean;
+}
+
+export interface OrgLoginSession {
+  sessionId: string;
+  state: "starting" | "auth_url" | "authenticated" | "error";
+  authUrl?: string;
+  error?: string;
+  orgName?: string;
+  nodeCount?: number;
 }
 
 export interface Rule {
@@ -115,6 +125,8 @@ export interface SystemSettings {
 
 export interface DashboardSnapshot {
   tunEnabled: boolean;
+  coreAvailable: boolean;
+  coreVersion?: string;
   routingMode: RoutingMode;
   activeExitId: string;
   verifyingExitId?: string;

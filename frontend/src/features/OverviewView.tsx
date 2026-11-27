@@ -12,6 +12,7 @@ import {
   formatTrafficGB,
   getActiveExit,
   getBreakdownColor,
+  getExitIpDisplay,
   getLatencyMeta,
   type ModalKind,
 } from "../state/selectors";
@@ -19,6 +20,7 @@ import {
 interface OverviewViewProps {
   theme: "dark" | "light";
   tunEnabled: boolean;
+  coreAvailable: boolean;
   activeExitId: string;
   verifyingExitId?: string;
   bannerNotice?: { kind: "verifying" | "rollback"; text: string } | null;
@@ -46,6 +48,7 @@ const PERIOD_TABS: ReadonlyArray<{ id: TrafficPeriodKey; label: string }> = [
 export function OverviewView({
   theme,
   tunEnabled,
+  coreAvailable,
   activeExitId,
   verifyingExitId,
   bannerNotice,
@@ -65,6 +68,7 @@ export function OverviewView({
   const [selectedOrgFilter, setSelectedOrgFilter] = useState<string>("all");
 
   const activeExit = getActiveExit(exitNodes, activeExitId);
+  const exitIpMeta = getExitIpDisplay(activeExit);
   const downNow = tunEnabled ? (traffic.liveDownHistory.at(-1) ?? 0) : 0;
   const upNow = tunEnabled ? (traffic.liveUpHistory.at(-1) ?? 0) : 0;
   const totalPeriodGB =
@@ -78,7 +82,11 @@ export function OverviewView({
     }));
 
   const nodeStats = [...traffic.byNode].sort((a, b) => b.totalGB - a.totalGB);
-  const filteredNodes = filterExitNodesByOrg(exitNodes, selectedOrgFilter);
+  const effectiveOrgFilter =
+    selectedOrgFilter === "all" || orgs.some((o) => o.id === selectedOrgFilter)
+      ? selectedOrgFilter
+      : "all";
+  const filteredNodes = filterExitNodesByOrg(exitNodes, effectiveOrgFilter);
 
   return (
     <>
@@ -117,6 +125,16 @@ export function OverviewView({
       </div>
 
       <div className="view-scroll">
+        {!coreAvailable && (
+          <div
+            className="inline-banner is-verifying"
+            role="status"
+            data-testid="banner-missing-core"
+          >
+            <span>未检测到 sing-box 内核，TUN 与分流暂不可用</span>
+          </div>
+        )}
+
         {bannerNotice && (
           <div className={`inline-banner is-${bannerNotice.kind}`} role="status">
             <span>{bannerNotice.text}</span>
@@ -152,14 +170,12 @@ export function OverviewView({
           <div className="bento-cell">
             <div className="eyebrow-mono">出口公网 IP</div>
             <div className="metric-value selectable-text" id="metric-public-ip">
-              {activeExit?.publicIp ?? "—"}
+              {exitIpMeta.ipText}
             </div>
             <div className="metric-sub">
-              <span className="truncate">{activeExit?.region ?? "—"}</span>
-              <span
-                className={`tag-sharp ${Boolean(activeExit?.online) ? "tag-green" : "tag-red"}`}
-              >
-                {Boolean(activeExit?.online) ? "已连通" : "离线"}
+              <span className="truncate">{activeExit?.region || "—"}</span>
+              <span className={exitIpMeta.badgeClass}>
+                {exitIpMeta.badgeText}
               </span>
             </div>
           </div>
@@ -371,103 +387,144 @@ export function OverviewView({
           </div>
         </section>
 
-        <div className="section-bar">
-          <div className="seg-tabs" role="tablist" aria-label="组织筛选">
+        {orgs.length === 0 ? (
+          <section
+            className="empty-box"
+            aria-label="出口节点"
+            data-testid="empty-orgs-guide"
+          >
+            <div
+              style={{
+                fontSize: 15,
+                fontWeight: 600,
+                color: "var(--text-primary)",
+              }}
+            >
+              尚未挂载 Tailscale 组织
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
+              登录 Tailscale 账号后将自动拉取组织内所有可用的出口节点
+            </div>
             <button
               type="button"
-              className={`seg-tab ${selectedOrgFilter === "all" ? "is-active" : ""}`}
-              onClick={() => setSelectedOrgFilter("all")}
+              className="btn-lime"
+              data-testid="btn-empty-add-org"
+              onClick={() => onOpenModal("add-org")}
             >
-              全部 ({exitNodes.length})
+              + 挂载 Tailscale 组织
             </button>
-            {orgs.map((org) => {
-              const count = exitNodes.filter((n) => n.orgId === org.id).length;
-              return (
+          </section>
+        ) : (
+          <>
+            <div className="section-bar">
+              <div className="seg-tabs" role="tablist" aria-label="组织筛选">
                 <button
-                  key={org.id}
                   type="button"
-                  className={`seg-tab ${selectedOrgFilter === org.id ? "is-active" : ""}`}
-                  onClick={() => setSelectedOrgFilter(org.id)}
+                  className={`seg-tab ${effectiveOrgFilter === "all" ? "is-active" : ""}`}
+                  onClick={() => setSelectedOrgFilter("all")}
                 >
-                  {org.name} ({count})
+                  全部 ({exitNodes.length})
                 </button>
-              );
-            })}
-          </div>
-        </div>
+                {orgs.map((org) => {
+                  const count = exitNodes.filter((n) => n.orgId === org.id).length;
+                  return (
+                    <button
+                      key={org.id}
+                      type="button"
+                      className={`seg-tab ${effectiveOrgFilter === org.id ? "is-active" : ""}`}
+                      onClick={() => setSelectedOrgFilter(org.id)}
+                    >
+                      {org.name} ({count})
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
-        <section className="exit-grid" aria-label="出口节点">
-          {filteredNodes.map((node) => {
-            const isSelected = node.id === activeExitId;
-            const isVerifying = node.id === verifyingExitId;
-            const latency = getLatencyMeta(node.latencyMs, node.healthy);
-            return (
-              <button
-                key={node.id}
-                type="button"
-                className={`exit-card ${isSelected ? "is-selected" : ""} ${!node.online ? "is-offline" : ""}`}
-                data-testid={`exit-card-${node.id}`}
-                onClick={() => onSwitchExit(node.id)}
-              >
-                <div className="exit-card-head">
-                  <div className="exit-node-title">
-                    <span
-                      className={`status-dot ${isSelected ? "is-on" : node.healthy ? "is-green" : "is-amber"}`}
-                    />
-                    <span className="truncate">{node.label}</span>
-                  </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 4,
-                      flexShrink: 0,
-                    }}
-                  >
-                    {isVerifying ? (
-                      <span className="tag-sharp tag-amber">核验中</span>
-                    ) : isSelected ? (
-                      <span className="tag-sharp tag-lime">当前</span>
-                    ) : null}
-                    <span className={latency.tagClass}>{latency.text}</span>
-                  </div>
-                </div>
+            {filteredNodes.length === 0 ? (
+              <div className="empty-box" data-testid="empty-exits-box">
+                <div>暂无可用出口节点</div>
+              </div>
+            ) : (
+              <section className="exit-grid" aria-label="出口节点">
+                {filteredNodes.map((node) => {
+                  const isSelected = node.id === activeExitId;
+                  const isVerifying = node.id === verifyingExitId;
+                  const latency = getLatencyMeta(node.latencyMs, node.healthy);
+                  const nodeDisplayIp =
+                    node.publicIp && node.publicIp !== "-"
+                      ? node.publicIp
+                      : node.tailscaleIp || "待探测";
+                  return (
+                    <button
+                      key={node.id}
+                      type="button"
+                      className={`exit-card ${isSelected ? "is-selected" : ""} ${!node.online ? "is-offline" : ""}`}
+                      data-testid={`exit-card-${node.id}`}
+                      onClick={() => onSwitchExit(node.id)}
+                    >
+                      <div className="exit-card-head">
+                        <div className="exit-node-title">
+                          <span
+                            className={`status-dot ${isSelected ? "is-on" : node.healthy ? "is-green" : "is-amber"}`}
+                          />
+                          <span className="truncate">{node.label}</span>
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 4,
+                            flexShrink: 0,
+                          }}
+                        >
+                          {isVerifying ? (
+                            <span className="tag-sharp tag-amber">核验中</span>
+                          ) : isSelected ? (
+                            <span className="tag-sharp tag-lime">当前</span>
+                          ) : null}
+                          <span className={latency.tagClass}>{latency.text}</span>
+                        </div>
+                      </div>
 
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 8,
-                    paddingTop: 8,
-                    borderTop: "1px solid var(--border-hairline)",
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "11.5px",
-                    color: "var(--text-muted)",
-                  }}
-                >
-                  <span className="truncate">
-                    {node.orgName} ·{" "}
-                    <strong style={{ color: "var(--text-primary)", fontWeight: 500 }}>
-                      {node.publicIp}
-                    </strong>
-                  </span>
-                  <span
-                    style={{
-                      color:
-                        node.relayMode === "中继"
-                          ? "var(--status-amber)"
-                          : "var(--status-green)",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {node.relayMode}
-                  </span>
-                </div>
-              </button>
-            );
-          })}
-        </section>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                          paddingTop: 8,
+                          borderTop: "1px solid var(--border-hairline)",
+                          fontFamily: "var(--font-mono)",
+                          fontSize: "11.5px",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        <span className="truncate">
+                          {node.orgName} ·{" "}
+                          <strong style={{ color: "var(--text-primary)", fontWeight: 500 }}>
+                            {nodeDisplayIp}
+                          </strong>
+                        </span>
+                        <span
+                          style={{
+                            color:
+                              node.relayMode === "中继"
+                                ? "var(--status-amber)"
+                                : "var(--status-green)",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {node.relayMode}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </section>
+            )}
+          </>
+        )}
       </div>
     </>
   );
