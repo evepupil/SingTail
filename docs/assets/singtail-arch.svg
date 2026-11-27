@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 500" width="1200" height="500" shape-rendering="crispEdges" role="img" aria-label="SingTail 系统架构图">
+  <defs>
+    <style>
+      .sans { font-family: "Inter Tight", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+      .mono { font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <!-- Outer Charcoal Canvas -->
+  <rect x="0" y="0" width="1200" height="500" fill="#161618"/>
+  <rect x="1.5" y="1.5" width="1197" height="497" fill="none" stroke="#34343A" stroke-width="3"/>
+
+  <!-- Top Header Strip -->
+  <rect x="0" y="0" width="1200" height="44" fill="#CEFF00"/>
+  <line x1="0" y1="44" x2="1200" y2="44" stroke="#111113" stroke-width="2"/>
+  <text x="28" y="27" fill="#111113" font-size="13" font-weight="700" class="mono">ARCHITECTURE // 桌面控制端 × 守护网关 × 多组织发现与回滚 × SING-BOX TUN</text>
+  <rect x="1016" y="11" width="156" height="22" fill="#121214"/>
+  <text x="1094" y="26" text-anchor="middle" fill="#CEFF00" font-size="11" font-weight="700" class="mono">6S IP ROLLBACK</text>
+
+  <!-- Subtle Hairline Grid Backdrop -->
+  <line x1="304" y1="44" x2="304" y2="500" stroke="#29292E" stroke-width="1" stroke-dasharray="4 4"/>
+  <line x1="600" y1="44" x2="600" y2="500" stroke="#29292E" stroke-width="1" stroke-dasharray="4 4"/>
+  <line x1="896" y1="44" x2="896" y2="500" stroke="#29292E" stroke-width="1" stroke-dasharray="4 4"/>
+
+  <!-- Column Headers -->
+  <g>
+    <rect x="24" y="64" width="252" height="32" fill="#121214" stroke="#34343A" stroke-width="1"/>
+    <text x="36" y="85" fill="#CEFF00" font-size="12" font-weight="700" class="mono">01 / 桌面界面与托盘</text>
+
+    <rect x="324" y="64" width="252" height="32" fill="#121214" stroke="#34343A" stroke-width="1"/>
+    <text x="336" y="85" fill="#38BDF8" font-size="12" font-weight="700" class="mono">02 / 本地守护控制网关</text>
+
+    <rect x="624" y="64" width="252" height="32" fill="#121214" stroke="#34343A" stroke-width="1"/>
+    <text x="636" y="85" fill="#4ADE80" font-size="12" font-weight="700" class="mono">03 / 多组织与内核编排</text>
+
+    <rect x="924" y="64" width="252" height="32" fill="#121214" stroke="#34343A" stroke-width="1"/>
+    <text x="936" y="85" fill="#F5A623" font-size="12" font-weight="700" class="mono">04 / 内核运行时与账本</text>
+  </g>
+
+  <!-- COLUMN 1: DESKTOP UI -->
+  <g>
+    <rect x="24" y="114" width="252" height="90" fill="#1D1D20" stroke="#34343A" stroke-width="1.5"/>
+    <rect x="24" y="114" width="8" height="90" fill="#CEFF00"/>
+    <text x="44" y="142" fill="#ECECEE" font-size="15" font-weight="700" class="sans">React 19 + TS Strict</text>
+    <text x="44" y="166" fill="#B8B8BF" font-size="12" class="sans">总览流量 / 规则 / 连接检视器</text>
+    <text x="44" y="186" fill="#CEFF00" font-size="11" class="mono">Wails v2 无边框桌面壳</text>
+
+    <rect x="24" y="220" width="252" height="90" fill="#1D1D20" stroke="#34343A" stroke-width="1.5"/>
+    <rect x="24" y="220" width="8" height="90" fill="#38BDF8"/>
+    <text x="44" y="248" fill="#ECECEE" font-size="15" font-weight="700" class="sans">系统托盘快捷控制</text>
+    <text x="44" y="272" fill="#B8B8BF" font-size="12" class="sans">关窗不断网 · 秒切出口与模式</text>
+    <text x="44" y="292" fill="#38BDF8" font-size="11" class="mono">Win32 零 CGO / macOS App</text>
+
+    <rect x="24" y="326" width="252" height="132" fill="#F5F4F0" stroke="#111113" stroke-width="2"/>
+    <rect x="24" y="326" width="8" height="132" fill="#4ADE80"/>
+    <text x="44" y="356" fill="#111113" font-size="15" font-weight="700" class="sans">双模式组织挂载引导</text>
+    <text x="44" y="382" fill="#3C3A34" font-size="12" class="sans">1. 官方网页 / Headscale 授权</text>
+    <text x="44" y="404" fill="#3C3A34" font-size="12" class="sans">2. 导入已有 ts-state 目录</text>
+    <text x="44" y="434" fill="#2D5A00" font-size="11" font-weight="700" class="mono">1.5s 自动同步可用出口节点</text>
+  </g>
+
+  <!-- COLUMN 2: DAEMON GATEWAY -->
+  <g>
+    <rect x="324" y="114" width="252" height="164" fill="#1D1D20" stroke="#38BDF8" stroke-width="1.5"/>
+    <rect x="324" y="114" width="252" height="28" fill="#38BDF8"/>
+    <text x="338" y="133" fill="#111113" font-size="12" font-weight="700" class="mono">DAEMON GATEWAY</text>
+    <text x="338" y="164" fill="#ECECEE" font-size="14" font-weight="700" class="mono">127.0.0.1:4189</text>
+    <text x="338" y="188" fill="#B8B8BF" font-size="12" class="sans">随机本机鉴权令牌防跨站调用</text>
+    <text x="338" y="210" fill="#B8B8BF" font-size="12" class="sans">Windows SCM / macOS 服务</text>
+    <text x="338" y="232" fill="#B8B8BF" font-size="12" class="sans">开机免 UAC 静默自启托管</text>
+    <text x="338" y="256" fill="#38BDF8" font-size="11" class="mono">internal/daemon · syswin</text>
+
+    <rect x="324" y="294" width="252" height="164" fill="#1D1D20" stroke="#34343A" stroke-width="1.5"/>
+    <rect x="324" y="294" width="252" height="28" fill="#F5A623"/>
+    <text x="338" y="313" fill="#111113" font-size="12" font-weight="700" class="mono">RULES &amp; .SRS MANAGER</text>
+    <text x="338" y="344" fill="#ECECEE" font-size="13" font-weight="700" class="mono">internal/rules</text>
+    <text x="338" y="368" fill="#B8B8BF" font-size="12" class="sans">枚举本机进程一键添加规则</text>
+    <text x="338" y="390" fill="#B8B8BF" font-size="12" class="sans">解析 Clash / Surge 文本批量导入</text>
+    <text x="338" y="412" fill="#B8B8BF" font-size="12" class="sans">内置 7 个 .srs + 远程订阅校验</text>
+    <text x="338" y="436" fill="#F5A623" font-size="11" class="mono">支持本地备用代理 127.0.0.1:7897</text>
+  </g>
+
+  <!-- COLUMN 3: TAILNET & ENGINE -->
+  <g>
+    <rect x="624" y="114" width="252" height="164" fill="#1D1D20" stroke="#4ADE80" stroke-width="1.5"/>
+    <rect x="624" y="114" width="252" height="28" fill="#4ADE80"/>
+    <text x="638" y="133" fill="#111113" font-size="12" font-weight="700" class="mono">MULTI-ORG TAILNET</text>
+    <text x="638" y="164" fill="#ECECEE" font-size="13" font-weight="700" class="mono">internal/tailnet</text>
+    <text x="638" y="188" fill="#B8B8BF" font-size="12" class="sans">独立 ts-state-* 目录互不覆盖</text>
+    <text x="638" y="210" fill="#B8B8BF" font-size="12" class="sans">独立端口授权不断当前正式网卡</text>
+    <text x="638" y="232" fill="#B8B8BF" font-size="12" class="sans">识别 P2P 直连打洞 / DERP 中继</text>
+    <text x="638" y="256" fill="#4ADE80" font-size="11" class="mono">一键并发测速全组织出口</text>
+
+    <rect x="624" y="294" width="252" height="164" fill="#1D1D20" stroke="#F87171" stroke-width="1.5"/>
+    <rect x="624" y="294" width="252" height="28" fill="#F87171"/>
+    <text x="638" y="313" fill="#111113" font-size="12" font-weight="700" class="mono">ENGINE &amp; IP ROLLBACK</text>
+    <text x="638" y="344" fill="#ECECEE" font-size="13" font-weight="700" class="mono">internal/engine</text>
+    <text x="638" y="368" fill="#B8B8BF" font-size="12" class="sans">热切出口实测真实公网 IP</text>
+    <text x="638" y="390" fill="#B8B8BF" font-size="12" class="sans">6 秒超时自动切回原可用出口</text>
+    <text x="638" y="412" fill="#B8B8BF" font-size="12" class="sans">放行 Clash/Mihomo 进程防套娃</text>
+    <text x="638" y="436" fill="#F87171" font-size="11" class="mono">含 8.128.0.0/10 国内段修正</text>
+  </g>
+
+  <!-- COLUMN 4: RUNTIME & LEDGER -->
+  <g>
+    <rect x="924" y="114" width="252" height="164" fill="#CEFF00" stroke="#111113" stroke-width="2"/>
+    <rect x="924" y="114" width="252" height="28" fill="#121214"/>
+    <text x="938" y="133" fill="#CEFF00" font-size="12" font-weight="700" class="mono">SING-BOX 1.14.3 CORE</text>
+    <text x="938" y="164" fill="#111113" font-size="14" font-weight="700" class="mono">TUN + Encrypted DNS</text>
+    <text x="938" y="188" fill="#111113" font-size="12" font-weight="600" class="sans">系统虚拟网卡透明接管流量</text>
+    <text x="938" y="210" fill="#111113" font-size="12" font-weight="600" class="sans">国内直连不减速 · 境外走加密 DNS</text>
+    <text x="938" y="232" fill="#111113" font-size="12" font-weight="600" class="sans">退出时干净释放网卡不断本机网</text>
+    <text x="938" y="256" fill="#111113" font-size="11" font-weight="700" class="mono">bin/sing-box + rules/*.srs</text>
+
+    <rect x="924" y="294" width="252" height="164" fill="#1D1D20" stroke="#34343A" stroke-width="1.5"/>
+    <rect x="924" y="294" width="252" height="28" fill="#121214"/>
+    <text x="938" y="313" fill="#ECECEE" font-size="12" font-weight="700" class="mono">SQLITE &amp; CONFIGSTORE</text>
+    <text x="938" y="344" fill="#ECECEE" font-size="13" font-weight="700" class="mono">internal/stats · configstore</text>
+    <text x="938" y="368" fill="#B8B8BF" font-size="12" class="sans">48h 分钟采样 + 日/周/月汇总</text>
+    <text x="938" y="390" fill="#B8B8BF" font-size="12" class="sans">按组织与出口节点统计流量占比</text>
+    <text x="938" y="412" fill="#B8B8BF" font-size="12" class="sans">导出配置强制剔除全部组织私钥</text>
+    <text x="938" y="436" fill="#CEFF00" font-size="11" class="mono">CGO_ENABLED=0 零依赖嵌入式库</text>
+  </g>
+</svg>
