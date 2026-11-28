@@ -72,21 +72,79 @@ func (s *Store) LiveHistory() (downMBps []float64, upMBps []float64) {
 	return down, up
 }
 
-// RecordTick records one traffic delta into the live ring buffer and atomically updates SQLite rollup tables.
+// NodeTrafficEntry represents byte increments attributed to one organization and exit node.
+type NodeTrafficEntry struct {
+	OrgID     string
+	NodeID    string
+	DownBytes int64
+	UpBytes   int64
+}
+
+// RecordTick records one 1-second traffic delta into the live ring buffer and atomically updates SQLite rollup tables.
 func (s *Store) RecordTick(ts time.Time, orgID, nodeID string, downBytes, upBytes int64) error {
+	return s.RecordSample(ts, time.Second, orgID, nodeID, downBytes, upBytes)
+}
+
+// PushIdleLivePoint appends a zero-rate point to the in-memory live rate ring buffer without writing SQLite rows.
+func (s *Store) PushIdleLivePoint() {
+	if s == nil {
+		return
+	}
+	s.pushLivePoint(0, 0)
+}
+
+// RecordSample converts a byte delta over elapsed duration into per-second live rates (MB/s) and persists SQLite rollup tables.
+func (s *Store) RecordSample(ts time.Time, elapsed time.Duration, orgID, nodeID string, downBytes, upBytes int64) error {
+	return s.RecordTrafficSample(ts, elapsed, downBytes, upBytes, []NodeTrafficEntry{{
+		OrgID:     orgID,
+		NodeID:    nodeID,
+		DownBytes: downBytes,
+		UpBytes:   upBytes,
+	}})
+}
+
+// RecordTrafficSample pushes one combined per-second live rate point and atomically writes non-zero per-node entries to SQLite.
+func (s *Store) RecordTrafficSample(ts time.Time, elapsed time.Duration, totalDownBytes, totalUpBytes int64, entries []NodeTrafficEntry) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("stats: store is closed")
 	}
-	if downBytes < 0 {
-		downBytes = 0
+	if totalDownBytes < 0 {
+		totalDownBytes = 0
 	}
-	if upBytes < 0 {
-		upBytes = 0
+	if totalUpBytes < 0 {
+		totalUpBytes = 0
+	}
+	if elapsed <= 0 {
+		elapsed = time.Second
 	}
 
-	downMB := round1(float64(downBytes) / float64(bytesPerMB))
-	upMB := round1(float64(upBytes) / float64(bytesPerMB))
+	secs := elapsed.Seconds()
+	downMB := round3(float64(totalDownBytes) / float64(bytesPerMB) / secs)
+	upMB := round3(float64(totalUpBytes) / float64(bytesPerMB) / secs)
 	s.pushLivePoint(downMB, upMB)
+
+	var nonZero []NodeTrafficEntry
+	for _, e := range entries {
+		d := e.DownBytes
+		u := e.UpBytes
+		if d < 0 {
+			d = 0
+		}
+		if u < 0 {
+			u = 0
+		}
+		if d > 0 || u > 0 {
+			nonZero = append(nonZero, NodeTrafficEntry{
+				OrgID:     e.OrgID,
+				NodeID:    e.NodeID,
+				DownBytes: d,
+				UpBytes:   u,
+			})
+		}
+	}
+	if len(nonZero) == 0 {
+		return nil
+	}
 
 	bucketMinute := ts.Unix() / 60
 	cutoffMinute := ts.Add(-48*time.Hour).Unix() / 60
@@ -108,42 +166,42 @@ func (s *Store) RecordTick(ts time.Time, orgID, nodeID string, downBytes, upByte
 		ON CONFLICT(bucket_minute, org_id, node_id) DO UPDATE SET
 			down_bytes = down_bytes + excluded.down_bytes,
 			up_bytes = up_bytes + excluded.up_bytes;`
-	if _, err := tx.Exec(upsertSample, bucketMinute, orgID, nodeID, downBytes, upBytes); err != nil {
-		return fmt.Errorf("stats: upsert traffic_samples: %w", err)
-	}
-
-	if _, err := tx.Exec(`DELETE FROM traffic_samples WHERE bucket_minute < ?;`, cutoffMinute); err != nil {
-		return fmt.Errorf("stats: prune traffic_samples: %w", err)
-	}
-
 	const upsertHourly = `
 		INSERT INTO traffic_hourly (hour_key, org_id, node_id, down_bytes, up_bytes)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(hour_key, org_id, node_id) DO UPDATE SET
 			down_bytes = down_bytes + excluded.down_bytes,
 			up_bytes = up_bytes + excluded.up_bytes;`
-	if _, err := tx.Exec(upsertHourly, hourKey, orgID, nodeID, downBytes, upBytes); err != nil {
-		return fmt.Errorf("stats: upsert traffic_hourly: %w", err)
-	}
-
 	const upsertDaily = `
 		INSERT INTO traffic_daily (day_key, org_id, node_id, down_bytes, up_bytes)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(day_key, org_id, node_id) DO UPDATE SET
 			down_bytes = down_bytes + excluded.down_bytes,
 			up_bytes = up_bytes + excluded.up_bytes;`
-	if _, err := tx.Exec(upsertDaily, dayKey, orgID, nodeID, downBytes, upBytes); err != nil {
-		return fmt.Errorf("stats: upsert traffic_daily: %w", err)
-	}
-
 	const upsertMonthly = `
 		INSERT INTO traffic_monthly (month_key, org_id, node_id, down_bytes, up_bytes)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(month_key, org_id, node_id) DO UPDATE SET
 			down_bytes = down_bytes + excluded.down_bytes,
 			up_bytes = up_bytes + excluded.up_bytes;`
-	if _, err := tx.Exec(upsertMonthly, monthKey, orgID, nodeID, downBytes, upBytes); err != nil {
-		return fmt.Errorf("stats: upsert traffic_monthly: %w", err)
+
+	for _, e := range nonZero {
+		if _, err := tx.Exec(upsertSample, bucketMinute, e.OrgID, e.NodeID, e.DownBytes, e.UpBytes); err != nil {
+			return fmt.Errorf("stats: upsert traffic_samples: %w", err)
+		}
+		if _, err := tx.Exec(upsertHourly, hourKey, e.OrgID, e.NodeID, e.DownBytes, e.UpBytes); err != nil {
+			return fmt.Errorf("stats: upsert traffic_hourly: %w", err)
+		}
+		if _, err := tx.Exec(upsertDaily, dayKey, e.OrgID, e.NodeID, e.DownBytes, e.UpBytes); err != nil {
+			return fmt.Errorf("stats: upsert traffic_daily: %w", err)
+		}
+		if _, err := tx.Exec(upsertMonthly, monthKey, e.OrgID, e.NodeID, e.DownBytes, e.UpBytes); err != nil {
+			return fmt.Errorf("stats: upsert traffic_monthly: %w", err)
+		}
+	}
+
+	if _, err := tx.Exec(`DELETE FROM traffic_samples WHERE bucket_minute < ?;`, cutoffMinute); err != nil {
+		return fmt.Errorf("stats: prune traffic_samples: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

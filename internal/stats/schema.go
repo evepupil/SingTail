@@ -135,6 +135,10 @@ func round1(v float64) float64 {
 	return math.Round(v*10) / 10
 }
 
+func round3(v float64) float64 {
+	return math.Round(v*1000) / 1000
+}
+
 func bytesToGB(b int64) float64 {
 	return float64(b) / float64(bytesPerGB)
 }

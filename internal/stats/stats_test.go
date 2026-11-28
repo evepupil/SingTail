@@ -59,7 +59,7 @@ func TestOpenAndLiveHistory(t *testing.T) {
 
 	for i := 0; i < 40; i++ {
 		downBytes := int64((i + 1) * 1024 * 1024 / 2) // 0.5 MB increments
-		upBytes := int64(256 * 1024)                  // 0.25 MB -> rounded 0.3
+		upBytes := int64(256 * 1024)                  // 0.25 MB/s
 		if err := st.RecordTick(base.Add(time.Duration(i+1)*time.Second), "org-work", "node-us", downBytes, upBytes); err != nil {
 			t.Fatalf("RecordTick %d failed: %v", i, err)
 		}
@@ -72,8 +72,47 @@ func TestOpenAndLiveHistory(t *testing.T) {
 	if down[35] != 20.0 {
 		t.Fatalf("expected latest down rate 20.0 MB/s, got %v", down[35])
 	}
-	if up[35] != 0.3 {
-		t.Fatalf("expected latest up rate 0.3 MB/s, got %v", up[35])
+	if up[35] != 0.25 {
+		t.Fatalf("expected latest up rate 0.25 MB/s, got %v", up[35])
+	}
+}
+
+func TestRecordSampleElapsedAndSub50KBpsPrecision(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sample.db")
+	st, err := stats.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ts := time.Date(2026, 11, 28, 14, 0, 0, 0, time.UTC)
+	// 2 MB over 2s must yield 1.0 MB/s (not 2.0 MB/s), and 32 KB over 1s must not truncate to 0.
+	if err := st.RecordSample(ts, 2*time.Second, "org-work", "node-us", 2*1024*1024, 64*1024); err != nil {
+		t.Fatalf("RecordSample 2s failed: %v", err)
+	}
+	down, up := st.LiveHistory()
+	if down[35] != 1.0 {
+		t.Fatalf("expected 1.0 MB/s over 2s interval, got %v", down[35])
+	}
+	if up[35] != 0.031 {
+		t.Fatalf("expected 0.031 MB/s (32KB/s), got %v", up[35])
+	}
+
+	if err := st.RecordSample(ts.Add(time.Second), time.Second, "org-work", "node-us", 20*1024, 10*1024); err != nil {
+		t.Fatalf("RecordSample low rate failed: %v", err)
+	}
+	down, up = st.LiveHistory()
+	if down[35] <= 0 || up[35] <= 0 {
+		t.Fatalf("expected non-zero sub-50KB/s rate, got down=%v up=%v", down[35], up[35])
+	}
+
+	// Zero-byte idle ticks push zero rate without inflating persisted totals.
+	if err := st.RecordSample(ts.Add(2*time.Second), time.Second, "org-work", "node-us", 0, 0); err != nil {
+		t.Fatalf("RecordSample idle failed: %v", err)
+	}
+	down, up = st.LiveHistory()
+	if down[35] != 0 || up[35] != 0 {
+		t.Fatalf("expected zero live rate after idle sample, got down=%v up=%v", down[35], up[35])
 	}
 }
 

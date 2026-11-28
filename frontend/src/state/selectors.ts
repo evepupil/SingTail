@@ -38,10 +38,46 @@ export function formatTrafficGB(gb: number): string {
   if (!Number.isFinite(gb) || gb <= 0) {
     return "0.0 GB";
   }
+  if (gb < 1) {
+    const mb = gb * 1024;
+    if (mb < 1) {
+      const kb = mb * 1024;
+      if (kb < 10) {
+        return `${kb.toFixed(1)} KB`;
+      }
+      return `${Math.round(kb)} KB`;
+    }
+    return `${mb.toFixed(1)} MB`;
+  }
   if (gb >= 1024) {
     return `${(gb / 1024).toFixed(2)} TB`;
   }
   return `${gb.toFixed(1)} GB`;
+}
+
+export function formatLiveRateParts(mbps: number): {
+  value: string;
+  unit: string;
+} {
+  if (!Number.isFinite(mbps) || mbps <= 0) {
+    return { value: "0", unit: "KB/s" };
+  }
+  if (mbps < 1) {
+    const kbps = mbps * 1024;
+    if (kbps < 10) {
+      return { value: kbps.toFixed(1), unit: "KB/s" };
+    }
+    return { value: String(Math.round(kbps)), unit: "KB/s" };
+  }
+  return {
+    value: mbps >= 10 ? mbps.toFixed(1) : mbps.toFixed(2),
+    unit: "MB/s",
+  };
+}
+
+export function formatLiveRateText(mbps: number): string {
+  const { value, unit } = formatLiveRateParts(mbps);
+  return `${value} ${unit}`;
 }
 
 export function formatRateKBps(kbps: number): string {

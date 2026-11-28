@@ -7,6 +7,8 @@ import {
   filterConnections,
   filterExitNodesByOrg,
   filterRules,
+  formatLiveRateParts,
+  formatLiveRateText,
   formatRateKBps,
   formatTrafficGB,
   getActionMeta,
@@ -154,7 +156,14 @@ const SAMPLE_CONNS: LiveConnection[] = [
 ];
 
 describe("formatTrafficGB", () => {
-  it("formats values below 1 TB in GB with 1 decimal", () => {
+  it("formats sub-GB values in KB or MB cleanly", () => {
+    expect(formatTrafficGB(0.04746866)).toBe("48.6 MB");
+    expect(formatTrafficGB(0.5)).toBe("512.0 MB");
+    expect(formatTrafficGB(512 / (1024 * 1024))).toBe("512 KB");
+    expect(formatTrafficGB(5.1 / (1024 * 1024))).toBe("5.1 KB");
+  });
+
+  it("formats values from 1 GB to below 1 TB in GB with 1 decimal", () => {
     expect(formatTrafficGB(0)).toBe("0.0 GB");
     expect(formatTrafficGB(18.44)).toBe("18.4 GB");
     expect(formatTrafficGB(1023.9)).toBe("1023.9 GB");
@@ -168,6 +177,16 @@ describe("formatTrafficGB", () => {
   it("guards negative or non-finite inputs", () => {
     expect(formatTrafficGB(-5)).toBe("0.0 GB");
     expect(formatTrafficGB(Number.NaN)).toBe("0.0 GB");
+  });
+});
+
+describe("formatLiveRateParts", () => {
+  it("auto-scales live rate between KB/s and MB/s", () => {
+    expect(formatLiveRateParts(0)).toEqual({ value: "0", unit: "KB/s" });
+    expect(formatLiveRateParts(0.004)).toEqual({ value: "4.1", unit: "KB/s" });
+    expect(formatLiveRateParts(0.25)).toEqual({ value: "256", unit: "KB/s" });
+    expect(formatLiveRateParts(2.345)).toEqual({ value: "2.35", unit: "MB/s" });
+    expect(formatLiveRateText(18.44)).toBe("18.4 MB/s");
   });
 });
 

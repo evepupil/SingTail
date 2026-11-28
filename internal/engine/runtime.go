@@ -44,11 +44,46 @@ type RuntimeApplyRequest struct {
 	Settings     contract.SystemSettings
 }
 
+// ClashConnTraffic captures cumulative byte counters and outbound chains for one active connection.
+type ClashConnTraffic struct {
+	ID          string
+	Download    int64
+	Upload      int64
+	Chains      []string
+	RouteAction contract.RuleAction
+}
+
+// IsExitNode reports whether the connection traverses an exit outbound rather than direct, reject, or fallback proxy.
+func (c ClashConnTraffic) IsExitNode() bool {
+	if c.RouteAction != contract.ActionExit {
+		return false
+	}
+	for _, ch := range c.Chains {
+		trimmed := strings.TrimSpace(ch)
+		if strings.HasPrefix(trimmed, "ep-") || trimmed == defaultExitTag {
+			return true
+		}
+	}
+	return false
+}
+
+// ExitOrgID extracts the Tailscale organization ID from ep-<orgID> chains when present.
+func (c ClashConnTraffic) ExitOrgID() string {
+	for _, ch := range c.Chains {
+		trimmed := strings.TrimSpace(ch)
+		if strings.HasPrefix(trimmed, "ep-") {
+			return strings.TrimPrefix(trimmed, "ep-")
+		}
+	}
+	return ""
+}
+
 // ClashConnectionsSnapshot holds aggregated byte totals and active connections from Clash API.
 type ClashConnectionsSnapshot struct {
 	DownloadTotal int64
 	UploadTotal   int64
 	Connections   []contract.LiveConnection
+	ConnTraffic   []ClashConnTraffic
 }
 
 // Runtime supervises the managed sing-box child process and Clash API communication.
@@ -640,6 +675,7 @@ func (s *ClashSampler) Fetch(clashAPIAddr string) (ClashConnectionsSnapshot, err
 
 	nextSamples := make(map[string]connSample, len(raw.Connections))
 	out := make([]contract.LiveConnection, 0, len(raw.Connections))
+	connTraffic := make([]ClashConnTraffic, 0, len(raw.Connections))
 
 	for _, item := range raw.Connections {
 		proc := baseProcessName(item.Metadata.ProcessPath)
@@ -676,6 +712,15 @@ func (s *ClashSampler) Fetch(clashAPIAddr string) (ClashConnectionsSnapshot, err
 			}
 		}
 
+		routeAction := inferRouteAction(item.Chains)
+		connTraffic = append(connTraffic, ClashConnTraffic{
+			ID:          item.ID,
+			Download:    item.Download,
+			Upload:      item.Upload,
+			Chains:      append([]string(nil), item.Chains...),
+			RouteAction: routeAction,
+		})
+
 		out = append(out, contract.LiveConnection{
 			ID:          item.ID,
 			Process:     proc,
@@ -684,7 +729,7 @@ func (s *ClashSampler) Fetch(clashAPIAddr string) (ClashConnectionsSnapshot, err
 			Port:        port,
 			Network:     network,
 			MatchedRule: formatMatchedRule(item.Rule, item.RulePayload),
-			RouteAction: inferRouteAction(item.Chains),
+			RouteAction: routeAction,
 			DownKBps:    downKBps,
 			TotalBytes:  formatByteCount(item.Download + item.Upload),
 			StartedAt:   formatConnStartTime(item.Start),
@@ -697,6 +742,7 @@ func (s *ClashSampler) Fetch(clashAPIAddr string) (ClashConnectionsSnapshot, err
 		DownloadTotal: raw.DownloadTotal,
 		UploadTotal:   raw.UploadTotal,
 		Connections:   out,
+		ConnTraffic:   connTraffic,
 	}, nil
 }
 

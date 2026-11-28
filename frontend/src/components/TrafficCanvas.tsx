@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { formatLiveRateText, formatTrafficGB } from "../state/selectors";
 import type { TrafficReport } from "../types/contract";
 
 interface TrafficCanvasProps {
@@ -66,9 +67,15 @@ function drawChart(
 
     const downArr = traffic.liveDownHistory;
     const upArr = traffic.liveUpHistory;
-    const maxVal = Math.max(12, ...downArr, ...upArr);
-    const padTop = 10;
+    const peak = Math.max(0.05, ...downArr, ...upArr);
+    const maxVal = peak * 1.2;
+    const padTop = 16;
     const usableH = chartH - padTop;
+
+    ctx.font = '10.5px "Geist Mono", Consolas, monospace';
+    ctx.textAlign = "left";
+    ctx.fillStyle = labelColor;
+    ctx.fillText(formatLiveRateText(maxVal), 6, 12);
 
     const drawSeries = (arr: readonly number[], stroke: string, fill: string | null) => {
       if (arr.length < 2) {
@@ -111,30 +118,42 @@ function drawChart(
   }
 
   const totals = labels.map((_, i) => (traffic.downSeries[i] ?? 0) + (traffic.upSeries[i] ?? 0));
-  const maxTotal = Math.max(1, ...totals) * 1.15;
+  const peakTotal = Math.max(0, ...totals);
+  const maxTotal = (peakTotal > 0 ? peakTotal : 1) * 1.15;
   const padX = 18;
   const slotW = (w - padX * 2) / n;
   const barW = Math.min(28, Math.max(10, Math.floor(slotW * 0.48)));
 
   ctx.font = '10.5px "Geist Mono", Consolas, monospace';
+  if (peakTotal > 0) {
+    ctx.textAlign = "left";
+    ctx.fillStyle = labelColor;
+    ctx.fillText(formatTrafficGB(maxTotal), 6, 12);
+  }
   ctx.textAlign = "center";
 
   for (let i = 0; i < n; i += 1) {
     const downV = traffic.downSeries[i] ?? 0;
     const upV = traffic.upSeries[i] ?? 0;
-    const downH = Math.max(2, (downV / maxTotal) * (chartH - 12));
-    const upH = Math.max(1, (upV / maxTotal) * (chartH - 12));
+    const usableBarH = Math.max(12, chartH - 18);
+    const downH = downV > 0 ? Math.max(2, (downV / maxTotal) * usableBarH) : 0;
+    const upH = upV > 0 ? Math.max(2, (upV / maxTotal) * usableBarH) : 0;
 
     const cx = padX + slotW * i + slotW / 2;
     const x = Math.round(cx - barW / 2);
     const yDown = Math.round(chartH - downH);
-    const yUp = Math.round(yDown - upH - 1);
+    const gap = downH > 0 && upH > 0 ? 1 : 0;
+    const yUp = Math.round(chartH - downH - gap - upH);
 
-    ctx.fillStyle = downBar;
-    ctx.fillRect(x, yDown, barW, downH);
+    if (downH > 0) {
+      ctx.fillStyle = downBar;
+      ctx.fillRect(x, yDown, barW, downH);
+    }
 
-    ctx.fillStyle = upStroke;
-    ctx.fillRect(x, yUp, barW, upH);
+    if (upH > 0) {
+      ctx.fillStyle = upStroke;
+      ctx.fillRect(x, yUp, barW, upH);
+    }
 
     ctx.fillStyle = labelColor;
     ctx.fillText(labels[i] ?? "", cx, h - 6);
