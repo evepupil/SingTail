@@ -31,12 +31,12 @@ import (
 
 const (
 	// DaemonBuildTag identifies the active daemon feature generation for desktop mismatch detection.
-	DaemonBuildTag = "20261128-exit-fix"
+	DaemonBuildTag = "20261128-stats-priv-fix"
 
 	defaultDataDir     = "./data"
 	defaultMixedProxy  = engine.DefaultMixedProxy
 	maxJSONBodyBytes   = 2 << 20
-	sampleInterval     = 2 * time.Second
+	sampleInterval     = 1 * time.Second
 	bytesPerMB         = 1024 * 1024
 	exitSwitchTimeout  = 15 * time.Second
 	runtimeStartTimout = 50 * time.Second
@@ -76,9 +76,9 @@ type Server struct {
 	mu       sync.RWMutex
 	settings contract.SystemSettings
 
-	clashTotalsMu     sync.Mutex
-	lastDownloadTotal int64
-	lastUploadTotal   int64
+	clashTotalsMu  sync.Mutex
+	trafficTracker TrafficDeltaTracker
+	lastSampleAt   time.Time
 
 	tunMu  sync.Mutex
 	saveMu sync.Mutex
@@ -298,8 +298,8 @@ func (s *Server) applySingBoxRuntimeWithTun(ctx context.Context, exitID string, 
 
 func (s *Server) resetClashTotals() {
 	s.clashTotalsMu.Lock()
-	s.lastDownloadTotal = 0
-	s.lastUploadTotal = 0
+	s.trafficTracker.Reset()
+	s.lastSampleAt = time.Time{}
 	s.clashTotalsMu.Unlock()
 }
 
@@ -946,6 +946,13 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	s.settings = next
 	s.mu.Unlock()
 
+	if s.shouldManageSingBox() && (syswin.IsWindowsService() || syswin.IsElevated()) {
+		if err := syswin.SetServiceAutoStart(next.AutoStartService); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("同步系统服务自启状态失败: %v", err))
+			return
+		}
+	}
+
 	if err := s.reloadRuntimeIfRunning(r.Context()); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1102,6 +1109,7 @@ func (s *Server) buildSnapshot(period contract.TrafficPeriodKey) (contract.Dashb
 
 	return contract.DashboardSnapshot{
 		TunEnabled:      tunEnabled,
+		Privileged:      !s.shouldManageSingBox() || syswin.IsElevated() || syswin.IsWindowsService(),
 		CoreAvailable:   s.coreAvailable,
 		CoreVersion:     s.coreVersion,
 		RoutingMode:     mode,
@@ -1184,11 +1192,11 @@ func (s *Server) sampleDemoTick(now time.Time) {
 	downBytes := int64(math.Round(downMB * float64(bytesPerMB)))
 	upBytes := int64(math.Round(upMB * float64(bytesPerMB)))
 
-	_ = s.stats.RecordTick(now, active.OrgID, active.ID, downBytes, upBytes)
+	_ = s.stats.RecordSample(now, sampleInterval, active.OrgID, active.ID, downBytes, upBytes)
 }
 
 func (s *Server) sampleRealTick(now time.Time) {
-	tunEnabled, _, activeExitID, _, _ := s.ctrl.State()
+	tunEnabled, mode, activeExitID, _, _ := s.ctrl.State()
 	nodes := s.tailnet.ListExitNodes()
 	active, ok := findExitNodeByID(nodes, activeExitID)
 	if !ok && len(nodes) > 0 {
@@ -1198,9 +1206,7 @@ func (s *Server) sampleRealTick(now time.Time) {
 	if !tunEnabled || s.rt == nil || !s.rt.IsRunning() {
 		s.ctrl.SetConnections(nil)
 		s.resetClashTotals()
-		if active.ID != "" {
-			_ = s.stats.RecordTick(now, active.OrgID, active.ID, 0, 0)
-		}
+		s.stats.PushIdleLivePoint()
 		return
 	}
 
@@ -1211,26 +1217,55 @@ func (s *Server) sampleRealTick(now time.Time) {
 	s.ctrl.SetConnections(snap.Connections)
 
 	if active.ID == "" {
+		s.stats.PushIdleLivePoint()
 		return
 	}
 
 	s.clashTotalsMu.Lock()
-	var deltaDown, deltaUp int64
-	if snap.DownloadTotal >= s.lastDownloadTotal {
-		deltaDown = snap.DownloadTotal - s.lastDownloadTotal
-	} else {
-		deltaDown = snap.DownloadTotal
+	elapsed := sampleInterval
+	if !s.lastSampleAt.IsZero() {
+		if delta := now.Sub(s.lastSampleAt); delta >= 200*time.Millisecond && delta <= 10*time.Second {
+			elapsed = delta
+		}
 	}
-	if snap.UploadTotal >= s.lastUploadTotal {
-		deltaUp = snap.UploadTotal - s.lastUploadTotal
-	} else {
-		deltaUp = snap.UploadTotal
-	}
-	s.lastDownloadTotal = snap.DownloadTotal
-	s.lastUploadTotal = snap.UploadTotal
+	s.lastSampleAt = now
+	delta := s.trafficTracker.Compute(mode, active.OrgID, snap)
 	s.clashTotalsMu.Unlock()
 
-	_ = s.stats.RecordTick(now, active.OrgID, active.ID, deltaDown, deltaUp)
+	entries := make([]stats.NodeTrafficEntry, 0, len(delta.ByOrg))
+	for _, usage := range delta.ByOrg {
+		orgID := usage.OrgID
+		nodeID := resolveNodeIDForOrg(orgID, active, nodes)
+		if nodeID == "" {
+			orgID = active.OrgID
+			nodeID = active.ID
+		}
+		entries = append(entries, stats.NodeTrafficEntry{
+			OrgID:     orgID,
+			NodeID:    nodeID,
+			DownBytes: usage.DownBytes,
+			UpBytes:   usage.UpBytes,
+		})
+	}
+
+	_ = s.stats.RecordTrafficSample(now, elapsed, delta.DownBytes, delta.UpBytes, entries)
+}
+
+func resolveNodeIDForOrg(orgID string, active contract.ExitNode, nodes []contract.ExitNode) string {
+	if orgID == "" || orgID == active.OrgID {
+		return active.ID
+	}
+	for _, n := range nodes {
+		if n.OrgID == orgID && n.Online {
+			return n.ID
+		}
+	}
+	for _, n := range nodes {
+		if n.OrgID == orgID {
+			return n.ID
+		}
+	}
+	return ""
 }
 
 func findExternalSingBoxProcess() string {

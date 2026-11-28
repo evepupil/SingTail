@@ -15,13 +15,6 @@ import (
 )
 
 const (
-	// ServiceName is the logical service identifier shared across platforms.
-	ServiceName = "SingTailService"
-	// ServiceDisplayName is the human-readable service title.
-	ServiceDisplayName = "SingTail Core Service"
-	// ServiceDescription explains the background service purpose.
-	ServiceDescription = "SingTail background daemon managing multi-tailnet exit nodes and sing-box TUN routing."
-
 	// LaunchDaemonLabel is the macOS launchd service label.
 	LaunchDaemonLabel = "io.singtail.service"
 	// LaunchDaemonPlistPath is the system LaunchDaemon plist destination on macOS.
@@ -30,15 +23,29 @@ const (
 	darwinServiceLogDir   = "/Library/Logs/SingTail"
 )
 
+// IsElevated reports whether the current process has root privileges on macOS.
+func IsElevated() bool {
+	return os.Geteuid() == 0
+}
+
 // InstallService installs and starts the SingTail LaunchDaemon on macOS,
 // prompting for administrator privileges via osascript when not running as root.
 func InstallService(exePath string) error {
+	return InstallServiceWithOptions(exePath, ServiceInstallOptions{})
+}
+
+// InstallServiceWithOptions installs and starts the SingTail LaunchDaemon on macOS.
+func InstallServiceWithOptions(exePath string, opts ServiceInstallOptions) error {
+	dataDir := darwinServiceDataDir
+	if args := buildServiceStartArgs(opts); len(args) >= 2 {
+		dataDir = args[1]
+	}
 	resolvedPath, err := resolveDarwinServiceExecutable(exePath)
 	if err != nil {
 		return err
 	}
 
-	plistContent := buildLaunchDaemonPlist(resolvedPath, darwinServiceDataDir, darwinServiceLogDir)
+	plistContent := buildLaunchDaemonPlist(resolvedPath, dataDir, darwinServiceLogDir)
 	tmpFile, err := os.CreateTemp("", "io.singtail.service.*.plist")
 	if err != nil {
 		return fmt.Errorf("create temp plist: %w", err)
@@ -93,6 +100,41 @@ func UninstallService() error {
 // IsWindowsService always returns false on macOS.
 func IsWindowsService() bool {
 	return false
+}
+
+// QueryServiceStatus reports whether the macOS LaunchDaemon plist is installed.
+func QueryServiceStatus() (ServiceStatusInfo, error) {
+	_, err := os.Stat(LaunchDaemonPlistPath)
+	installed := err == nil
+	return ServiceStatusInfo{
+		Installed: installed,
+		AutoStart: installed,
+	}, nil
+}
+
+// StartInstalledService triggers launchd kickstart on macOS.
+func StartInstalledService() error {
+	return StartOrRestartService(false)
+}
+
+// StartOrRestartService reloads or restarts the macOS LaunchDaemon when installed.
+func StartOrRestartService(_ bool) error {
+	return runShellWithPrivileges(fmt.Sprintf("launchctl kickstart -k system/%s", LaunchDaemonLabel))
+}
+
+// SetServiceAutoStart is a safe no-op on macOS where RunAtLoad governs daemon startup.
+func SetServiceAutoStart(_ bool) error {
+	return nil
+}
+
+// RunElevatedWait is only implemented for Windows UAC flows.
+func RunElevatedWait(_ string, _ bool, _ ...string) (bool, uint32, error) {
+	return false, 0, nil
+}
+
+// RelaunchSelfElevated is only implemented for Windows UAC flows.
+func RelaunchSelfElevated(_ ...string) (bool, error) {
+	return false, nil
 }
 
 // RunService invokes runFn directly on macOS and closes stopCh on SIGINT or SIGTERM.

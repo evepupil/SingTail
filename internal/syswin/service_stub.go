@@ -9,18 +9,49 @@ import (
 	"syscall"
 )
 
-const (
-	// ServiceName is the Windows SCM service identifier for SingTail's background daemon.
-	ServiceName = "SingTailService"
-	// ServiceDisplayName is shown in Windows Services (services.msc).
-	ServiceDisplayName = "SingTail Core Service"
-	// ServiceDescription explains the background service purpose in services.msc.
-	ServiceDescription = "SingTail background daemon managing multi-tailnet exit nodes and sing-box TUN routing."
-)
+// IsElevated reports whether the current Unix process has root privileges.
+func IsElevated() bool {
+	return os.Geteuid() == 0
+}
 
 // InstallService is a safe no-op on generic Unix hosts.
 func InstallService(_ string) error {
 	return nil
+}
+
+// InstallServiceWithOptions is a safe no-op on generic Unix hosts.
+func InstallServiceWithOptions(_ string, _ ServiceInstallOptions) error {
+	return nil
+}
+
+// QueryServiceStatus returns an empty status on generic Unix hosts.
+func QueryServiceStatus() (ServiceStatusInfo, error) {
+	return ServiceStatusInfo{}, nil
+}
+
+// StartInstalledService is a safe no-op on generic Unix hosts.
+func StartInstalledService() error {
+	return nil
+}
+
+// StartOrRestartService is a safe no-op on generic Unix hosts.
+func StartOrRestartService(_ bool) error {
+	return nil
+}
+
+// SetServiceAutoStart is a safe no-op on generic Unix hosts.
+func SetServiceAutoStart(_ bool) error {
+	return nil
+}
+
+// RunElevatedWait is a safe no-op on generic Unix hosts.
+func RunElevatedWait(_ string, _ bool, _ ...string) (bool, uint32, error) {
+	return false, 0, nil
+}
+
+// RelaunchSelfElevated is a safe no-op on generic Unix hosts.
+func RelaunchSelfElevated(_ ...string) (bool, error) {
+	return false, nil
 }
 
 // UninstallService is a safe no-op on generic Unix hosts.

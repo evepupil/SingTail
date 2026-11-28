@@ -17,10 +17,10 @@
 
 ## 2. 结构与数据流
 
-- `internal/daemon/server.go`：HTTP 路由注册、鉴权中间件、1 秒后台遥测采样协程调度。
+- `internal/daemon/server.go` & `traffic_tracker.go`：HTTP 路由注册、鉴权中间件、1 秒后台遥测采样与出口专属增量分离。
 - `internal/syswin/process_windows.go` & `process_stub.go`：Windows 下调用 `CreateToolhelp32Snapshot`（纯 Go `golang.org/x/sys/windows`）枚举活动进程；非 Windows 下返回标准快照供跨平台测试与预览。
-- `internal/syswin/service_windows.go` & `service_stub.go`：基于 `golang.org/x/sys/windows/svc` 实现后台服务宿主与安装命令。
-- `cmd/singtail-service/main.go`：守护服务可执行入口（支持 `-install`、`-uninstall`、`-dev` 前台预览模式）。
+- `internal/syswin/service_common.go`、`service_windows.go`、`service_darwin.go` & `service_stub.go`：基于 `golang.org/x/sys/windows/svc` 与 read-only SCM API 实现后台服务状态探测、安装/启动/自启策略同步、以及按需 UAC 提权执行。
+- `cmd/singtail-service/main.go`：守护服务可执行入口（支持 `-install`、`-start`、`-uninstall`、便携目录数据绑定与后台服务宿主模式）。
 
 ## 3. 关键决策
 
@@ -28,10 +28,9 @@
 
 ## 4. 当前实现
 
-- `internal/daemon/server.go`：默认零模拟数据生产模式启动，提供组织授权、凭据导入、组织移除和浏览器唤起等控制接口，兼容本机桌面窗口。开启虚拟网卡时，先等内核启动和出口检查完成，再更新开关和保存状态；失败时返回原因，开关保持关闭。仅在非直连模式且出口路由生效时才异步回写节点公网 IP，避免把本机直连 IP 误写为出口公网 IP。桌面端接入已有后台服务时同步校验版本标记，若旧版服务仍在运行则直接提示升级。
-- `internal/syswin/`：Windows 下通过纯 Go（`CGO_ENABLED=0`）实现进程枚举、Windows 服务注册管理，以及带专属黄绿 `ST` 像素图标与动态实时右键菜单（开关 TUN、切换分流模式、秒切出口节点）的原生任务栏系统托盘；macOS 下通过 `process_darwin.go` 与 `service_darwin.go` 实现进程枚举与 `LaunchDaemon` 提权服务安装。
-- `cmd/singtail-service/main.go`：支持跨平台默认数据目录解析、`-listen`、`-data-dir`、`-web-dir`、`-install`、`-uninstall` 及后台服务宿主模式。
-- 桌面端在后台服务未运行时可在自身进程内托管网络。这个模式下，启动内核或检查配置也不会弹出命令行窗口。
+- `internal/daemon/server.go` & `traffic_tracker.go`：默认零模拟数据生产模式启动，提供组织授权、凭据导入、组织移除、浏览器唤起与 `privileged` 状态上报；每 1 秒采样的流量统计仅分离记入真正经过出口节点的字节增量，排除直连/本地代理/拦截干扰并支持按需同步系统服务开机自启配置。
+- `internal/syswin/` & `cmd/singtail-desktop/`：桌面端启动若检测到本机 4189 端口无响应且未安装/未运行系统服务，自动发起一次 UAC 授权（GUI 无闪黑窗）完成 `SingTailService` 安装（便携目录自动绑定同级 `data/`）并拉起后台服务，后续开机自启后普通双击桌面图标零弹窗直连；若用户拒绝提权，仍可进入普通模式并支持在横幅按钮或点击 TUN 开关时随时一键授权热切换至后台服务。
+- `cmd/singtail-service/main.go`：支持跨平台默认数据目录解析、`-listen`、`-data-dir`、`-web-dir`、`-install`、`-start`、`-uninstall` 及后台服务宿主模式。
 - `internal/daemon/server_test.go` & `internal/syswin/syswin_test.go`：全量单测与竞态测试全部通过。
 
 ## 5. 验证方式
@@ -57,3 +56,4 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/singtail-service
 | 2026-11-27 | 开关在出口检查完成后才确认开启，失败时保留关闭状态。 |
 | 2026-11-28 | 桌面直接托管网络时同样静默启动内核。 |
 | 2026-11-28 | 修复直连模式误覆盖出口公网 IP 的问题，并增加桌面端对旧版后台服务的识别提示。 |
+| 2026-11-28 | 流量采样改为 1 秒分离出口专属流量、桌面启动/开 TUN 支持按需 UAC 自动安装并拉起 `SingTailService` 且统一便携数据目录、同步设置页开机自启策略。 |

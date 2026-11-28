@@ -32,6 +32,7 @@ func main() {
 	dataDir := flag.String("data-dir", "", "directory for state and traffic database")
 	webDir := flag.String("web-dir", "", "optional static frontend directory to serve")
 	install := flag.Bool("install", false, "install background service")
+	start := flag.Bool("start", false, "start background service after install")
 	uninstall := flag.Bool("uninstall", false, "uninstall background service")
 	demo := flag.Bool("demo", false, "enable demo mock data for UI preview")
 	realProbe := flag.Bool("real-probe", true, "enable real network probing and sing-box runtime")
@@ -41,8 +42,14 @@ func main() {
 		log.Fatal("cannot specify both -install and -uninstall")
 	}
 	if *install {
-		if err := syswin.InstallService(""); err != nil {
+		installDataDir := resolveInstallDataDir(*dataDir)
+		if err := syswin.InstallServiceWithOptions("", syswin.ServiceInstallOptions{DataDir: installDataDir}); err != nil {
 			log.Fatalf("install service failed: %v", err)
+		}
+		if *start {
+			if err := syswin.StartOrRestartService(true); err != nil {
+				log.Fatalf("start service failed: %v", err)
+			}
 		}
 		fmt.Printf("Installed service %s (%s)\n", syswin.ServiceName, syswin.ServiceDisplayName)
 		return
@@ -73,6 +80,27 @@ func main() {
 	if err := serve(ctx.Done(), *listenAddr, resolvedDataDir, *webDir, *realProbe, *demo); err != nil {
 		log.Fatalf("singtail-service exited with error: %v", err)
 	}
+}
+
+func resolveInstallDataDir(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed != "" {
+		abs, err := filepath.Abs(trimmed)
+		if err == nil {
+			return abs
+		}
+		return filepath.Clean(trimmed)
+	}
+	if runtime.GOOS == "windows" {
+		if exe, err := os.Executable(); err == nil {
+			exeDir := filepath.Dir(exe)
+			portable := filepath.Join(exeDir, "data")
+			if !isProgramFilesDir(exeDir) && isDirWritable(portable) {
+				return portable
+			}
+		}
+	}
+	return ""
 }
 
 func resolveServiceDataDir(raw string, isService bool) string {

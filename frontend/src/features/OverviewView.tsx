@@ -9,6 +9,8 @@ import {
 } from "../types/contract";
 import {
   filterExitNodesByOrg,
+  formatLiveRateParts,
+  formatLiveRateText,
   formatTrafficGB,
   getActiveExit,
   getBreakdownColor,
@@ -20,6 +22,7 @@ import {
 interface OverviewViewProps {
   theme: "dark" | "light";
   tunEnabled: boolean;
+  privileged: boolean;
   coreAvailable: boolean;
   activeExitId: string;
   verifyingExitId?: string;
@@ -33,6 +36,7 @@ interface OverviewViewProps {
   onChangePeriod: (period: TrafficPeriodKey) => void;
   onSwitchExit: (exitId: string) => void;
   onPingNodes: () => void;
+  onElevatePrivilege: () => void;
   onDismissBanner: () => void;
   onOpenModal: (modal: Exclude<ModalKind, null>) => void;
 }
@@ -48,6 +52,7 @@ const PERIOD_TABS: ReadonlyArray<{ id: TrafficPeriodKey; label: string }> = [
 export function OverviewView({
   theme,
   tunEnabled,
+  privileged,
   coreAvailable,
   activeExitId,
   verifyingExitId,
@@ -61,6 +66,7 @@ export function OverviewView({
   onChangePeriod,
   onSwitchExit,
   onPingNodes,
+  onElevatePrivilege,
   onDismissBanner,
   onOpenModal,
 }: OverviewViewProps) {
@@ -71,6 +77,8 @@ export function OverviewView({
   const exitIpMeta = getExitIpDisplay(activeExit);
   const downNow = tunEnabled ? (traffic.liveDownHistory.at(-1) ?? 0) : 0;
   const upNow = tunEnabled ? (traffic.liveUpHistory.at(-1) ?? 0) : 0;
+  const downRate = formatLiveRateParts(downNow);
+  const upRateText = formatLiveRateText(upNow);
   const totalPeriodGB =
     traffic.totalGB > 0 ? traffic.totalGB : traffic.totalDownGB + traffic.totalUpGB;
 
@@ -135,6 +143,23 @@ export function OverviewView({
           </div>
         )}
 
+        {coreAvailable && !privileged && (
+          <div
+            className="inline-banner is-rollback"
+            role="status"
+            data-testid="banner-need-privilege"
+          >
+            <span>当前未授权系统服务权限，开启 TUN 需先完成一次管理员授权</span>
+            <button
+              type="button"
+              className="btn-lime btn-sm"
+              onClick={onElevatePrivilege}
+            >
+              授权后台服务
+            </button>
+          </div>
+        )}
+
         {bannerNotice && (
           <div className={`inline-banner is-${bannerNotice.kind}`} role="status">
             <span>{bannerNotice.text}</span>
@@ -184,7 +209,7 @@ export function OverviewView({
             <div className="eyebrow-mono">实时速率</div>
             <div className="metric-value">
               <span id="live-down-val" style={{ color: "var(--accent-text)" }}>
-                ↓ {downNow.toFixed(1)}
+                ↓ {downRate.value}
               </span>{" "}
               <span
                 style={{
@@ -193,12 +218,12 @@ export function OverviewView({
                   fontWeight: 500,
                 }}
               >
-                MB/s
+                {downRate.unit}
               </span>
             </div>
             <div className="metric-sub font-mono-ui">
               <span id="live-up-val" style={{ color: "var(--status-cyan)" }}>
-                ↑ {upNow.toFixed(1)} MB/s
+                ↑ {upRateText}
               </span>
               <span>连接 {connectionsCount}</span>
             </div>

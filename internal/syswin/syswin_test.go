@@ -2,6 +2,7 @@ package syswin
 
 import (
 	"errors"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -48,9 +49,26 @@ func TestServiceStubAndConstants(t *testing.T) {
 		if err := InstallService("/tmp/singtail-service"); err != nil {
 			t.Fatalf("InstallService stub error = %v", err)
 		}
+		if err := InstallServiceWithOptions("/tmp/singtail-service", ServiceInstallOptions{DataDir: "/tmp/data"}); err != nil {
+			t.Fatalf("InstallServiceWithOptions stub error = %v", err)
+		}
 		if err := UninstallService(); err != nil {
 			t.Fatalf("UninstallService stub error = %v", err)
 		}
+	}
+
+	if _, err := QueryServiceStatus(); err != nil && runtime.GOOS != "windows" {
+		t.Fatalf("QueryServiceStatus error = %v", err)
+	}
+}
+
+func TestBuildServiceStartArgs(t *testing.T) {
+	if args := buildServiceStartArgs(ServiceInstallOptions{}); args != nil {
+		t.Fatalf("expected nil args for empty options, got %v", args)
+	}
+	args := buildServiceStartArgs(ServiceInstallOptions{DataDir: filepath.Join(".", "data")})
+	if len(args) != 2 || args[0] != "-data-dir" || !filepath.IsAbs(args[1]) {
+		t.Fatalf("unexpected service start args: %v", args)
 	}
 
 	if runtime.GOOS != "windows" {

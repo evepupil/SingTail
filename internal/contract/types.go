@@ -165,6 +165,7 @@ type SystemSettings struct {
 // DashboardSnapshot returns the full reactive state required by the desktop UI.
 type DashboardSnapshot struct {
 	TunEnabled      bool             `json:"tunEnabled"`
+	Privileged      bool             `json:"privileged"`
 	CoreAvailable   bool             `json:"coreAvailable"`
 	CoreVersion     string           `json:"coreVersion,omitempty"`
 	RoutingMode     RoutingMode      `json:"routingMode"`

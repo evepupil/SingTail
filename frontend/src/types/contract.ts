@@ -126,6 +126,7 @@ export interface SystemSettings {
 
 export interface DashboardSnapshot {
   tunEnabled: boolean;
+  privileged?: boolean;
   coreAvailable: boolean;
   coreVersion?: string;
   routingMode: RoutingMode;

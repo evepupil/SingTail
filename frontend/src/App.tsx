@@ -156,13 +156,16 @@ export function App() {
     void loadSnapshot("live");
   }, [loadSnapshot]);
 
-  // Silent 2s polling in live view or active connections view
+  // Live 1s polling in overview/live view or active connections view
   useEffect(() => {
     const shouldPoll =
-      trafficPeriod === "live" || (activeView === "connections" && !connPaused);
+      activeView === "overview" || (activeView === "connections" && !connPaused);
     if (!shouldPoll) {
       return;
     }
+
+    const pollMs =
+      trafficPeriod === "live" || activeView === "connections" ? 1000 : 2000;
 
     const timer = window.setInterval(() => {
       if (pollInFlightRef.current) {
@@ -187,7 +190,7 @@ export function App() {
         .finally(() => {
           pollInFlightRef.current = false;
         });
-    }, 2000);
+    }, pollMs);
 
     return () => {
       window.clearInterval(timer);
@@ -264,11 +267,25 @@ export function App() {
       return;
     }
     const nextEnabled = !snapshot.tunEnabled;
+    if (nextEnabled && snapshot.privileged === false) {
+      void runMutation(async () => {
+        await daemonClient.elevatePrivilege();
+        return daemonClient.setTun(true);
+      }, "已授权后台服务并开启 TUN");
+      return;
+    }
     void runMutation(
       () => daemonClient.setTun(nextEnabled),
       nextEnabled ? "TUN 已开启" : "TUN 已关闭",
     );
   }, [snapshot, runMutation]);
+
+  const handleElevatePrivilege = useCallback(() => {
+    void runMutation(
+      () => daemonClient.elevatePrivilege(),
+      "后台服务已就绪",
+    );
+  }, [runMutation]);
 
   const handleSetMode = useCallback(
     (mode: RoutingMode) => {
@@ -843,6 +860,7 @@ export function App() {
               <OverviewView
                 theme={theme}
                 tunEnabled={snapshot.tunEnabled}
+                privileged={snapshot.privileged !== false}
                 coreAvailable={snapshot.coreAvailable}
                 activeExitId={snapshot.activeExitId}
                 verifyingExitId={snapshot.verifyingExitId}
@@ -856,6 +874,7 @@ export function App() {
                 onChangePeriod={handleChangePeriod}
                 onSwitchExit={(id) => void handleSwitchExit(id)}
                 onPingNodes={handlePingNodes}
+                onElevatePrivilege={handleElevatePrivilege}
                 onDismissBanner={handleDismissBanner}
                 onOpenModal={setActiveModal}
               />

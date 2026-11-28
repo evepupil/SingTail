@@ -93,6 +93,13 @@ export const daemonClient = {
     });
   },
 
+  elevatePrivilege(): Promise<DashboardSnapshot> {
+    return requestJson<DashboardSnapshot>("/api/privilege/elevate", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+
   setMode(mode: RoutingMode): Promise<DashboardSnapshot> {
     return requestJson<DashboardSnapshot>("/api/mode", {
       method: "POST",
