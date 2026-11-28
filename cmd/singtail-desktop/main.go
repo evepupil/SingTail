@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -181,6 +182,37 @@ func buildAPIProxyHandler(apiBaseURL string) (http.Handler, error) {
 	proxy.Director = func(req *http.Request) {
 		origDirector(req)
 		req.Header.Set("Origin", apiBaseURL)
+		if req.Method == http.MethodGet && req.URL.Path == "/api/snapshot" {
+			req.Header.Del("Accept-Encoding")
+		}
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if resp.Request == nil || resp.Request.Method != http.MethodGet || resp.Request.URL.Path != "/api/snapshot" || resp.StatusCode != http.StatusOK {
+			return nil
+		}
+		if resp.Header.Get("X-SingTail-Build") == daemon.DaemonBuildTag {
+			return nil
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		_ = resp.Body.Close()
+		if err != nil {
+			return err
+		}
+		var snap contract.DashboardSnapshot
+		if json.Unmarshal(body, &snap) == nil && snap.BannerNotice == nil {
+			snap.BannerNotice = &contract.BannerNotice{
+				Kind: "rollback",
+				Text: "后台系统服务仍是旧版本，请以管理员身份运行新包里的 install-service.bat 升级服务",
+			}
+			if updated, marshalErr := json.Marshal(snap); marshalErr == nil {
+				updated = append(updated, '\n')
+				body = updated
+			}
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		return nil
 	}
 	return proxy, nil
 }
@@ -309,7 +341,7 @@ func postJSONViaAPI(endpoint string, body any) error {
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: 45 * time.Second}
+	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return err

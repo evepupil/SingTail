@@ -60,7 +60,11 @@ func TestGenerateSingBoxConfigComplete(t *testing.T) {
 	}
 
 	// Verify experimental.clash_api.external_controller defaults to 127.0.0.1:19090
+	// and cache_file is omitted so stale cached Clash modes cannot override SingTail state.
 	exp := parsed["experimental"].(map[string]any)
+	if _, hasCacheFile := exp["cache_file"]; hasCacheFile {
+		t.Fatalf("expected experimental.cache_file to be omitted, got %+v", exp["cache_file"])
+	}
 	clashAPI := exp["clash_api"].(map[string]any)
 	if clashAPI["external_controller"] != DefaultClashAPIAddr {
 		t.Fatalf("expected external_controller %s, got %v", DefaultClashAPIAddr, clashAPI["external_controller"])

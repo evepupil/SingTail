@@ -48,14 +48,7 @@ type singBoxConfig struct {
 }
 
 type singBoxExperimental struct {
-	CacheFile *singBoxCacheFile `json:"cache_file,omitempty"`
-	ClashAPI  *singBoxClashAPI  `json:"clash_api,omitempty"`
-}
-
-type singBoxCacheFile struct {
-	Enabled  bool   `json:"enabled"`
-	Path     string `json:"path"`
-	StoreDNS bool   `json:"store_dns"`
+	ClashAPI *singBoxClashAPI `json:"clash_api,omitempty"`
 }
 
 type singBoxClashAPI struct {
@@ -136,16 +129,7 @@ func GenerateSingBoxConfigWithOptions(
 	selectorOutbounds = append(selectorOutbounds, epTags...)
 	selectorOutbounds = append(selectorOutbounds, directTag)
 
-	selectedDefault := selectorOutbounds[0]
-	if activeOrgID != "" {
-		wantedTag := "ep-" + activeOrgID
-		for _, tag := range epTags {
-			if tag == wantedTag {
-				selectedDefault = wantedTag
-				break
-			}
-		}
-	}
+	selectedDefault := selectDefaultOutbound(epTags, activeOrgID, selectorOutbounds[0])
 
 	outbounds := []map[string]any{
 		{
@@ -263,11 +247,6 @@ func GenerateSingBoxConfigWithOptions(
 	}
 	if dataDir != "" {
 		logCfg.Output = filepath.ToSlash(filepath.Join(dataDir, "sing-box.log"))
-		expCfg.CacheFile = &singBoxCacheFile{
-			Enabled:  true,
-			Path:     filepath.ToSlash(filepath.Join(dataDir, "cache.db")),
-			StoreDNS: true,
-		}
 	}
 
 	cfg := singBoxConfig{
@@ -387,6 +366,26 @@ func buildOrgEndpoints(
 	}
 
 	return endpoints, epTags, activeOrgID
+}
+
+func selectDefaultOutbound(epTags []string, activeOrgID, fallback string) string {
+	if activeOrgID != "" {
+		wantedTag := "ep-" + activeOrgID
+		for _, tag := range epTags {
+			if tag == wantedTag {
+				return wantedTag
+			}
+		}
+	}
+	return fallback
+}
+
+func resolveDefaultSelectorOutbound(orgs []contract.Organization, nodes []contract.ExitNode, activeExitID string) string {
+	_, epTags, activeOrgID := buildOrgEndpoints(orgs, nodes, activeExitID)
+	if len(epTags) == 0 {
+		return directTag
+	}
+	return selectDefaultOutbound(epTags, activeOrgID, epTags[0])
 }
 
 func sanitizeEndpointHostname(raw string) string {

@@ -67,7 +67,11 @@ func TestDaemonProductionZeroMockInitialStateAndOrgDelete(t *testing.T) {
 	}
 	defer func() { _ = srv.Close() }()
 
-	snap := decodeSnapshot(t, doReq(t, srv, http.MethodGet, "/api/snapshot?period=live", nil))
+	snapRec := doReq(t, srv, http.MethodGet, "/api/snapshot?period=live", nil)
+	if gotBuild := snapRec.Header().Get("X-SingTail-Build"); gotBuild != DaemonBuildTag {
+		t.Fatalf("expected X-SingTail-Build header %q, got %q", DaemonBuildTag, gotBuild)
+	}
+	snap := decodeSnapshot(t, snapRec)
 	if snap.TunEnabled {
 		t.Fatal("expected TunEnabled=false in fresh production state")
 	}
@@ -476,4 +480,31 @@ func TestDaemonConcurrency(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func TestProbeAndSavePublicIPSkipsDirectMode(t *testing.T) {
+	srv, err := NewServer(t.TempDir(), nil, false)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	snap := decodeSnapshot(t, doReq(t, srv, http.MethodPost, "/api/orgs", contract.AddOrgRequest{
+		Name:         "Direct Guard Org",
+		Account:      "ops@example.com",
+		NodeHostname: "guard-exit",
+		PublicIP:     "43.153.149.111",
+		Region:       "HK",
+	}))
+	exitID := snap.ExitNodes[0].ID
+
+	_ = decodeSnapshot(t, doReq(t, srv, http.MethodPost, "/api/tun", contract.SetTunRequest{Enabled: true}))
+	_ = decodeSnapshot(t, doReq(t, srv, http.MethodPost, "/api/mode", contract.SetModeRequest{Mode: contract.ModeDirect}))
+
+	srv.probeAndSavePublicIPAsync(exitID)
+
+	after := decodeSnapshot(t, doReq(t, srv, http.MethodGet, "/api/snapshot", nil))
+	if after.ExitNodes[0].PublicIP != "43.153.149.111" {
+		t.Fatalf("expected direct mode to preserve PublicIP 43.153.149.111, got %q", after.ExitNodes[0].PublicIP)
+	}
 }

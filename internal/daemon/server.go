@@ -30,13 +30,16 @@ import (
 )
 
 const (
+	// DaemonBuildTag identifies the active daemon feature generation for desktop mismatch detection.
+	DaemonBuildTag = "20261128-exit-fix"
+
 	defaultDataDir     = "./data"
 	defaultMixedProxy  = engine.DefaultMixedProxy
 	maxJSONBodyBytes   = 2 << 20
 	sampleInterval     = 2 * time.Second
 	bytesPerMB         = 1024 * 1024
-	exitSwitchTimeout  = 10 * time.Second
-	runtimeStartTimout = 40 * time.Second
+	exitSwitchTimeout  = 15 * time.Second
+	runtimeStartTimout = 50 * time.Second
 	providerFetchLimit = 16 << 20
 )
 
@@ -301,6 +304,7 @@ func (s *Server) resetClashTotals() {
 }
 
 func (s *Server) handleGetSnapshot(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-SingTail-Build", DaemonBuildTag)
 	periodParam := strings.TrimSpace(r.URL.Query().Get("period"))
 	period := contract.PeriodLive
 	if periodParam != "" {
@@ -332,7 +336,7 @@ func (s *Server) handleSetTun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.shouldManageSingBox() {
-		_, _, activeExitID, _, _ := s.ctrl.State()
+		_, mode, activeExitID, _, _ := s.ctrl.State()
 		runCtx, cancel := context.WithTimeout(context.Background(), runtimeStartTimout)
 		err := s.applySingBoxRuntimeWithTun(runCtx, activeExitID, req.Enabled)
 		cancel()
@@ -344,7 +348,7 @@ func (s *Server) handleSetTun(w http.ResponseWriter, r *http.Request) {
 		if !req.Enabled {
 			s.ctrl.SetConnections(nil)
 			s.resetClashTotals()
-		} else if s.getSettings().AutoVerifyIP && activeExitID != "" {
+		} else if s.getSettings().AutoVerifyIP && activeExitID != "" && mode != contract.ModeDirect {
 			go s.probeAndSavePublicIPAsync(activeExitID)
 		}
 	} else {
@@ -425,7 +429,8 @@ func (s *Server) handleSwitchExit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	settings := s.getSettings()
-	verifyIP := settings.AutoVerifyIP && (!s.shouldManageSingBox() || tunEnabled)
+	_, mode, _, _, _ := s.ctrl.State()
+	verifyIP := settings.AutoVerifyIP && (!s.shouldManageSingBox() || (tunEnabled && mode != contract.ModeDirect))
 
 	ctx, cancel := context.WithTimeout(r.Context(), exitSwitchTimeout)
 	defer cancel()
@@ -978,6 +983,10 @@ func (s *Server) handleOpenBrowser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) probeAndSavePublicIPAsync(exitID string) {
+	tunEnabled, mode, activeExitID, _, _ := s.ctrl.State()
+	if !tunEnabled || mode == contract.ModeDirect || activeExitID != exitID {
+		return
+	}
 	nodes := s.tailnet.ListExitNodes()
 	target, ok := findExitNodeByID(nodes, exitID)
 	if !ok {
@@ -986,9 +995,18 @@ func (s *Server) probeAndSavePublicIPAsync(exitID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), exitSwitchTimeout)
 	defer cancel()
 
+	if s.shouldManageSingBox() && (s.rt == nil || !s.rt.IsExitRouteActive(ctx)) {
+		return
+	}
+
 	prober := engine.NewDefaultProber(s.realNetworkProbe)
 	ip, err := prober.ProbePublicIP(ctx, defaultMixedProxy, target)
 	if err != nil || strings.TrimSpace(ip) == "" {
+		return
+	}
+
+	tunAfter, modeAfter, activeAfter, _, _ := s.ctrl.State()
+	if !tunAfter || modeAfter == contract.ModeDirect || activeAfter != exitID {
 		return
 	}
 	s.tailnet.UpdateNodePublicIP(exitID, ip)

@@ -62,7 +62,7 @@ func probeViaHTTP(ctx context.Context, proxyAddr string) (string, error) {
 	}
 
 	transport := &http.Transport{
-		DialContext: (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
+		DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
 	}
 	if addr := strings.TrimSpace(proxyAddr); addr != "" {
 		rawURL := addr

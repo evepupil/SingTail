@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +24,7 @@ import (
 )
 
 const (
-	clashReadyTimeout  = 35 * time.Second
+	clashReadyTimeout  = 45 * time.Second
 	clashPollInterval  = 150 * time.Millisecond
 	clashConnTimeout   = 1200 * time.Millisecond
 	singBoxCheckTimout = 10 * time.Second
@@ -165,7 +166,7 @@ func (r *Runtime) ApplyRuntime(ctx context.Context, req RuntimeApplyRequest) err
 	if !req.TunEnabled || !hasOnlineExitNode(req.Orgs, req.Nodes) {
 		return r.stopLocked()
 	}
-	verifyStartupExit := !r.isRunningLocked() && req.Mode != contract.ModeDirect
+	verifyStartupExit := req.Mode != contract.ModeDirect
 
 	finder := r.binFinder
 	if finder == nil {
@@ -227,6 +228,7 @@ func (r *Runtime) ApplyRuntime(ctx context.Context, req RuntimeApplyRequest) err
 	if err := r.stopLocked(); err != nil {
 		return fmt.Errorf("停止旧 sing-box 进程失败: %w", err)
 	}
+	_ = os.Remove(filepath.Join(dataDir, "cache.db"))
 
 	stderrBuf := newTailBuffer(maxStderrBuffer)
 	runCmd := newCoreCommand(context.Background(), binPath, "run", "-D", dataDir, "-c", cfgPath)
@@ -260,8 +262,20 @@ func (r *Runtime) ApplyRuntime(ctx context.Context, req RuntimeApplyRequest) err
 		_ = r.stopLocked()
 		return err
 	}
+	clashBaseURL := buildClashBaseURL(r.ClashAPIAddr())
+	if err := patchClashMode(readyCtx, clashBaseURL, req.Mode); err != nil {
+		_ = r.stopLocked()
+		return err
+	}
+	expectedExit := resolveDefaultSelectorOutbound(req.Orgs, req.Nodes, req.ActiveExitID)
+	if strings.HasPrefix(expectedExit, "ep-") {
+		if err := selectClashOutbound(readyCtx, clashBaseURL, expectedExit); err != nil {
+			_ = r.stopLocked()
+			return err
+		}
+	}
 	if verifyStartupExit {
-		if err := waitForExitReady(readyCtx, buildClashBaseURL(r.ClashAPIAddr()), doneCh); err != nil {
+		if err := waitForExitReady(readyCtx, clashBaseURL, clashModeName(req.Mode), DefaultMixedProxy, doneCh); err != nil {
 			_ = r.stopLocked()
 			return err
 		}
@@ -354,27 +368,37 @@ func (r *Runtime) PatchMode(ctx context.Context, mode contract.RoutingMode) erro
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	return patchClashMode(ctx, buildClashBaseURL(r.ClashAPIAddr()), mode)
+}
 
-	clashMode := "Rule"
-	switch mode {
-	case contract.ModeGlobal:
-		clashMode = "Global"
-	case contract.ModeDirect:
-		clashMode = "Direct"
-	case contract.ModeRule:
-		clashMode = "Rule"
-	}
-
-	payload, err := json.Marshal(map[string]string{"mode": clashMode})
+func patchClashMode(ctx context.Context, clashBaseURL string, mode contract.RoutingMode) error {
+	payload, err := json.Marshal(map[string]string{"mode": clashModeName(mode)})
 	if err != nil {
 		return err
 	}
+	if err := sendClashJSON(ctx, http.MethodPatch, clashBaseURL+"/configs", payload); err != nil {
+		return fmt.Errorf("同步 Clash 路由模式失败: %w", err)
+	}
+	return nil
+}
 
+func selectClashOutbound(ctx context.Context, clashBaseURL, outboundTag string) error {
+	payload, err := json.Marshal(map[string]string{"name": outboundTag})
+	if err != nil {
+		return err
+	}
+	endpoint := clashBaseURL + "/proxies/" + url.PathEscape(defaultExitTag)
+	if err := sendClashJSON(ctx, http.MethodPut, endpoint, payload); err != nil {
+		return fmt.Errorf("锁定默认出口失败: %w", err)
+	}
+	return nil
+}
+
+func sendClashJSON(ctx context.Context, method, endpoint string, payload []byte) error {
 	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	endpoint := buildClashBaseURL(r.ClashAPIAddr()) + "/configs"
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPatch, endpoint, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(reqCtx, method, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -382,15 +406,37 @@ func (r *Runtime) PatchMode(ctx context.Context, mode contract.RoutingMode) erro
 
 	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
 	if err != nil {
-		return fmt.Errorf("同步 Clash 路由模式失败: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("Clash PATCH /configs 返回 HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
+}
+
+// IsExitRouteActive verifies that Clash mode is not Direct and the default exit selector points to an endpoint.
+func (r *Runtime) IsExitRouteActive(ctx context.Context) bool {
+	if r == nil || !r.IsRunning() {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	clashURL := buildClashBaseURL(r.ClashAPIAddr())
+	client := &http.Client{Timeout: 2 * time.Second}
+	var cfg struct {
+		Mode string `json:"mode"`
+	}
+	if !readClashProbeJSON(ctx, client, clashURL+"/configs", &cfg) || strings.EqualFold(strings.TrimSpace(cfg.Mode), "Direct") {
+		return false
+	}
+	var selector struct {
+		Now string `json:"now"`
+	}
+	return readClashProbeJSON(ctx, client, clashURL+"/proxies/"+url.PathEscape(defaultExitTag), &selector) && strings.HasPrefix(selector.Now, "ep-")
 }
 
 // FindSingBoxBinary locates the bundled or system sing-box executable.
